@@ -1,2 +1,5 @@
 # 浏览器默认会请求 /favicon.ico，统一指向站点图标，避免多余 404
 /favicon.ico  /assets/favicon.png  200
+
+# 注意：仓库里的源码 / 脚本 / 文档等非站点文件的屏蔽写在 functions/_middleware.ts，
+# 因为 _redirects 只接受 200/301/302/303/307/308 这些状态码，无法在这里返回 404。

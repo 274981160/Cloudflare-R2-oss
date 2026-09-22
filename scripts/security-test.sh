@@ -9,7 +9,7 @@
 #     --binding WEBDAV_PUBLIC_READ=0 --binding WEBDAV_PUBLIC_THUMBNAILS=0
 set -uo pipefail
 
-BASE="${1:-http://127.0.0.1:8789}"
+BASE="${1:-http://127.0.0.1:8791}"
 ADMIN="admin:secret"
 USER1="user1:pass1"
 PASS=0

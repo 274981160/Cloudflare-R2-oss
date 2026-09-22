@@ -76,7 +76,8 @@ export interface PropfindItem {
 function renderProp(prop: PropfindProp): string {
   // 默认命名空间：所有 DAV: 属性不再带 D: 前缀（Android 客户端按标签名解析）
   const tag = prop.name;
-  if (prop.value === null) return `<${tag} />`;
+  // 空值统一输出自闭合标签，避免成对空标签让客户端解析混乱
+  if (prop.value === null || prop.value === "") return `<${tag} />`;
   const value = prop.raw ? prop.value : escapeXml(prop.value);
   return `<${tag}>${value}</${tag}>`;
 }

@@ -44,7 +44,7 @@ function lockResponse(lock: LockInfo, origin: string): Response {
   return new Response(lockResponseBody(lock, origin), {
     status: 200,
     headers: {
-      "Content-Type": 'application/xml; charset="utf-8"',
+      "Content-Type": "application/xml; charset=utf-8",
       "Lock-Token": `<${lock.token}>`,
       Timeout: `Second-${lock.timeoutSeconds}`,
       "Cache-Control": "no-store",

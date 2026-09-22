@@ -354,7 +354,7 @@ export async function handleRequestPropfind(context: DavContext): Promise<Respon
       '<?xml version="1.0" encoding="utf-8"?>\n<error xmlns="DAV:"><propfind-finite-depth /></error>',
       {
         status: 507,
-        headers: { "Content-Type": 'application/xml; charset="utf-8"' },
+        headers: { "Content-Type": "application/xml; charset=utf-8" },
       }
     );
   }

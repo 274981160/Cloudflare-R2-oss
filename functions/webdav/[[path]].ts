@@ -102,7 +102,7 @@ function lockedResponse(detail: { owner?: string; path?: string }): Response {
 </error>`;
   return new Response(body, {
     status: 423,
-    headers: { "Content-Type": 'application/xml; charset="utf-8"' },
+    headers: { "Content-Type": "application/xml; charset=utf-8" },
   });
 }
 

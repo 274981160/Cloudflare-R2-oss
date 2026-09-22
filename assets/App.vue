@@ -238,6 +238,14 @@
           <li>
             <button @click="runAction(() => preview(focusedItem))"><span>预览</span></button>
           </li>
+          <li v-if="isTextItem(focusedItem)">
+            <button @click="runAction(() => openEditor(focusedItem))"><span>编辑</span></button>
+          </li>
+          <li>
+            <button @click="runAction(() => openAsText(focusedItem))">
+              <span>以文本方式打开</span>
+            </button>
+          </li>
           <li v-if="directDownload">
             <a :href="rawUrl(focusedItem.key)" :download="focusedItem.name">
               <span>下载</span>
@@ -281,6 +289,15 @@
       @success="onLoginSuccess"
     ></LoginDialog>
 
+    <TextEditor
+      v-model="showTextEditor"
+      :item="editorItem"
+      :force-text="editorForceText"
+      @saved="onEditorSaved"
+    ></TextEditor>
+
+    <ApiKeys v-model="showApiKeys"></ApiKeys>
+
     <Transition name="fade">
       <div v-if="notice" class="notice" :class="noticeType" role="status" v-text="notice"></div>
     </Transition>
@@ -294,6 +311,8 @@ import MimeIcon from "./MimeIcon.vue";
 import UploadPopup from "./UploadPopup.vue";
 import LoginDialog from "./LoginDialog.vue";
 import FolderPicker from "./FolderPicker.vue";
+import TextEditor from "./TextEditor.vue";
+import ApiKeys from "./ApiKeys.vue";
 import {
   ApiError,
   basename,
@@ -308,6 +327,7 @@ import {
   errorMessage,
   formatDate,
   formatSize,
+  isTextFile,
   joinKey,
   listDirectory,
   moveKey,
@@ -332,6 +352,8 @@ export default {
     UploadPopup,
     LoginDialog,
     FolderPicker,
+    TextEditor,
+    ApiKeys,
   },
 
   data: () => ({
@@ -359,6 +381,10 @@ export default {
     showNewFolderDialog: false,
     showRenameDialog: false,
     showFolderPicker: false,
+    showTextEditor: false,
+    showApiKeys: false,
+    editorItem: null,
+    editorForceText: false,
     focusedItem: null,
     newFolderName: "",
     renameTarget: null,
@@ -371,11 +397,13 @@ export default {
     notice: "",
     noticeType: "info",
     uploadQueue: [],
+    uploadDirQueue: [],
     uploadTotalCount: 0,
     uploadFinishedCount: 0,
     uploadProgress: null,
     uploadStatus: "",
     uploadErrors: [],
+    uploadDirErrors: [],
     uploading: false,
   }),
 
@@ -384,6 +412,12 @@ export default {
 
     canWrite() {
       return this.profile.canWriteAny && this.dirCanWrite && !this.profile.readOnly;
+    },
+
+    /** 仅当账号权限含 "*"（全部目录）时才展示「API 密钥」入口 */
+    manageKeys() {
+      const permissions = Array.isArray(this.profile.permissions) ? this.profile.permissions : [];
+      return this.profile.authenticated === true && permissions.indexOf("*") !== -1;
     },
 
     directDownload() {
@@ -479,6 +513,7 @@ export default {
     menuItems() {
       const items = [{ text: "名称A-Z" }, { text: "大小↑" }, { text: "大小↓" }];
       if (this.canWrite && this.clipboard.length) items.push({ text: "粘贴" });
+      if (this.manageKeys) items.push({ text: "API 密钥" });
       items.push({ text: this.profile.authenticated ? "退出登录" : "登录" });
       return items;
     },
@@ -671,6 +706,49 @@ export default {
       this.downloadItem(item);
     },
 
+    /* ---------------- 在线文本编辑 ---------------- */
+
+    /** 文本类判定：MIME 类型优先，其次扩展名白名单（见 main.mjs 的 isTextFile） */
+    isTextItem(item) {
+      if (!item || item.type === "folder") return false;
+      return isTextFile(item.name || item.key, item.contentType);
+    },
+
+    openEditor(item) {
+      if (!item || item.type === "folder") return;
+      this.editorItem = {
+        key: item.key,
+        name: item.name,
+        size: item.size,
+        contentType: item.contentType,
+        writable: item.writable,
+        thumbnail: item.thumbnail,
+      };
+      this.editorForceText = false;
+      this.showTextEditor = true;
+    },
+
+    /** 兜底入口：任何文件都可以强行按文本打开（先确认，避免损坏内容） */
+    openAsText(item) {
+      if (!item || item.type === "folder") return;
+      if (!window.confirm("该文件可能不是文本，强行按文本打开可能损坏内容，确定继续？")) return;
+      this.editorItem = {
+        key: item.key,
+        name: item.name,
+        size: item.size,
+        contentType: item.contentType,
+        writable: item.writable,
+        thumbnail: item.thumbnail,
+      };
+      this.editorForceText = true;
+      this.showTextEditor = true;
+    },
+
+    async onEditorSaved() {
+      this.showNotice("已保存", "success");
+      await this.fetchFiles();
+    },
+
     async downloadItem(item) {
       if (!item) return;
       try {
@@ -757,12 +835,14 @@ export default {
 
       Promise.all(picked.map((item) => this.resolveDroppedItem(item)))
         .then((groups) => {
-          const collected = [].concat(...groups);
-          if (!collected.length) {
+          const collected = [].concat(...groups.map((group) => group.files));
+          // 空目录拖进来会一个文件都没有，单独记下来，稍后用 MKCOL 建出来
+          const emptyDirs = [].concat(...groups.map((group) => group.dirs));
+          if (!collected.length && !emptyDirs.length) {
             this.showNotice("没有可上传的文件", "error");
             return;
           }
-          this.uploadFiles(collected, this.cwd);
+          this.uploadFiles(collected, this.cwd, emptyDirs);
         })
         .catch((error) => {
           console.error("读取拖入内容失败", error);
@@ -770,33 +850,47 @@ export default {
         });
     },
 
-    /** 把拖入项解析成 { file, relativePath } 列表，支持整个文件夹 */
+    /**
+     * 把拖入项解析成 { files, dirs }：
+     * - files：`{ file, relativePath }` 列表，支持整个文件夹
+     * - dirs：整棵子树里一个文件都没有的目录（相对路径），用于补建空目录
+     */
     async resolveDroppedItem(item) {
-      if (item.file) return [item];
-      const output = [];
-      await this.walkEntry(item.entry, "", output);
-      return output;
+      if (item.file) return { files: [item], dirs: [] };
+      const files = [];
+      const dirs = [];
+      await this.walkEntry(item.entry, "", files, dirs);
+      return { files, dirs };
     },
 
-    async walkEntry(entry, prefix, output) {
-      if (!entry) return;
+    /** 递归遍历拖入项；返回该子树里是否存在文件 */
+    async walkEntry(entry, prefix, output, emptyDirs) {
+      if (!entry) return false;
       if (entry.isFile) {
         const file = await new Promise((resolve, reject) =>
           entry.file(resolve, reject)
         );
         output.push({ file, relativePath: prefix });
-        return;
+        return true;
       }
-      if (!entry.isDirectory) return;
+      if (!entry.isDirectory) return false;
       const directory = `${prefix}${entry.name}/`;
       const reader = entry.createReader();
+      let hasFile = false;
       for (;;) {
         const batch = await new Promise((resolve, reject) =>
           reader.readEntries(resolve, reject)
         );
         if (!batch || !batch.length) break;
-        for (const child of batch) await this.walkEntry(child, directory, output);
+        for (const child of batch) {
+          const childHasFile = await this.walkEntry(child, directory, output, emptyDirs);
+          if (childHasFile) hasFile = true;
+        }
       }
+      if (!hasFile && Array.isArray(emptyDirs)) {
+        emptyDirs.push(directory.replace(/\/+$/, ""));
+      }
+      return hasFile;
     },
 
     onUploadClicked(inputElement) {
@@ -806,7 +900,13 @@ export default {
       inputElement.value = "";
     },
 
-    uploadFiles(fileList, basedir) {
+    /**
+     * 入队上传。
+     * @param {File[]|{file: File, relativePath?: string}[]} fileList
+     * @param {string} [basedir] 目标目录
+     * @param {string[]} [emptyDirs] 需要补建的空目录（相对 basedir 的路径）
+     */
+    uploadFiles(fileList, basedir, emptyDirs) {
       if (!this.canWrite) {
         this.showNotice("当前为只读模式，无法上传", "error");
         return;
@@ -822,54 +922,129 @@ export default {
               file: item.file,
             };
           }
-          return { basedir: directory, file: item };
+          // <input webkitdirectory> 选中的文件夹：webkitRelativePath 自带多级目录
+          const relative = item && typeof item.webkitRelativePath === "string"
+            ? item.webkitRelativePath
+            : "";
+          const relativeDir = relative ? dirname(relative) : "";
+          return {
+            basedir: relativeDir ? joinKey(directory, relativeDir) : directory,
+            file: item,
+          };
         });
-      if (!tasks.length) return;
-      this.uploadQueue.push(...tasks);
-      this.uploadTotalCount += tasks.length;
+      const dirTasks = this.normalizeEmptyDirs(emptyDirs, directory);
+      if (!tasks.length && !dirTasks.length) return;
+      if (tasks.length) {
+        this.uploadQueue.push(...tasks);
+        this.uploadTotalCount += tasks.length;
+      }
+      if (dirTasks.length) this.uploadDirQueue.push(...dirTasks);
       this.processUploadQueue();
+    },
+
+    /** 空目录去重并按层级从浅到深排序（父目录要先于子目录创建） */
+    normalizeEmptyDirs(emptyDirs, basedir) {
+      const list = Array.isArray(emptyDirs) ? emptyDirs : [];
+      const seen = new Set();
+      const result = [];
+      for (const relative of list) {
+        const key = joinKey(basedir, relative || "");
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        result.push(key);
+      }
+      return result.sort(
+        (left, right) =>
+          left.split("/").length - right.split("/").length ||
+          left.localeCompare(right)
+      );
+    },
+
+    /** 上传进度里显示相对当前目录的路径（文件夹上传时能看清结构） */
+    uploadDisplayPath(key) {
+      const full = normalizePath(key);
+      const dir = normalizePath(this.cwd);
+      if (!dir) return full;
+      const prefix = `${dir}/`;
+      return full.indexOf(prefix) === 0 ? full.slice(prefix.length) : full;
     },
 
     async processUploadQueue() {
       if (this.uploading) return;
-      if (!this.uploadQueue.length) {
+      if (!this.uploadQueue.length && !this.uploadDirQueue.length) {
         this.uploadProgress = null;
         this.uploadStatus = "";
         return;
       }
       this.uploading = true;
-      while (this.uploadQueue.length) {
-        const task = this.uploadQueue.shift();
-        const file = task.file;
-        const key = joinKey(task.basedir, file.name);
-        this.uploadStatus = `正在上传（${this.uploadFinishedCount + 1}/${this.uploadTotalCount}）：${file.name}`;
-        this.uploadProgress = 0;
-        try {
-          await uploadWithThumbnail(key, file, {
-            onUploadProgress: (progress) => {
-              this.uploadProgress = progress.total
-                ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
-                : 0;
-            },
-          });
-        } catch (error) {
-          console.error("上传失败", key, error);
-          this.uploadErrors.push(`${file.name}：${errorMessage(error)}`);
-          if (error instanceof ApiError && error.status === 401) {
-            this.uploadFinishedCount++;
-            break;
+      let aborted = false;
+      let createdDirs = 0;
+      // 外层循环：上传过程中可能又有新任务入队（例如空目录阶段又拖入了文件）
+      while (!aborted && (this.uploadQueue.length || this.uploadDirQueue.length)) {
+        while (this.uploadQueue.length) {
+          const task = this.uploadQueue.shift();
+          const file = task.file;
+          const key = joinKey(task.basedir, file.name);
+          this.uploadStatus = `正在上传（${this.uploadFinishedCount + 1}/${this.uploadTotalCount}）：${this.uploadDisplayPath(key)}`;
+          this.uploadProgress = 0;
+          try {
+            await uploadWithThumbnail(key, file, {
+              onUploadProgress: (progress) => {
+                this.uploadProgress = progress.total
+                  ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
+                  : 0;
+              },
+            });
+          } catch (error) {
+            console.error("上传失败", key, error);
+            this.uploadErrors.push(`${this.uploadDisplayPath(key)}：${errorMessage(error)}`);
+            if (error instanceof ApiError && error.status === 401) {
+              this.uploadFinishedCount++;
+              aborted = true;
+              break;
+            }
+          }
+          this.uploadFinishedCount++;
+        }
+        if (aborted) break;
+        // 文件传完后父目录都已存在，再按层级把「一个文件都没有」的目录补建出来
+        while (this.uploadDirQueue.length) {
+          const key = this.uploadDirQueue.shift();
+          this.uploadStatus = `正在创建空文件夹：${this.uploadDisplayPath(key)}`;
+          try {
+            await createFolderRequest(key);
+            createdDirs++;
+          } catch (error) {
+            // 目录已存在时服务端返回 405，按成功处理
+            if (error instanceof ApiError && error.status === 405) {
+              createdDirs++;
+              continue;
+            }
+            console.warn("创建空文件夹失败", key, error);
+            if (error instanceof ApiError && error.status === 401) {
+              aborted = true;
+              break;
+            }
+            this.uploadDirErrors.push(`${this.uploadDisplayPath(key)}：${errorMessage(error)}`);
           }
         }
-        this.uploadFinishedCount++;
+      }
+      if (aborted) {
+        this.uploadQueue.length = 0;
+        this.uploadDirQueue.length = 0;
       }
       this.uploading = false;
       this.uploadProgress = null;
       this.uploadStatus = "";
       this.uploadTotalCount = 0;
       this.uploadFinishedCount = 0;
-      if (this.uploadErrors.length) {
-        this.showNotice(`上传失败：${this.uploadErrors.join("；")}`, "error");
-        this.uploadErrors = [];
+      const failures = this.uploadErrors.concat(this.uploadDirErrors);
+      this.uploadErrors = [];
+      this.uploadDirErrors = [];
+      if (failures.length) {
+        this.showNotice(`上传完成，但有失败项：${failures.join("；")}`, "error");
+      } else if (createdDirs) {
+        this.showNotice(`上传完成，并创建了 ${createdDirs} 个空文件夹`, "success");
       } else {
         this.showNotice("上传完成", "success");
       }
@@ -1095,6 +1270,9 @@ export default {
           break;
         case "粘贴":
           this.pasteFile();
+          break;
+        case "API 密钥":
+          if (this.manageKeys) this.showApiKeys = true;
           break;
         case "登录":
           this.openLoginDialog();

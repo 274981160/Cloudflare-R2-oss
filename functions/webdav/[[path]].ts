@@ -116,7 +116,7 @@ export const onRequest: PagesFunction<Env> = async function (context) {
   if (!parsed) return withDavHeaders(notFound(), env);
   const { bucket, path } = parsed;
 
-  const auth = authenticate(request, env);
+  const auth = await authenticate(request, env, bucket);
   if (auth.invalid) {
     return withDavHeaders(unauthorized("用户名或密码不正确"), env);
   }

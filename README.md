@@ -16,15 +16,23 @@
 | 类别 | 能力 |
 | --- | --- |
 | 文件管理 | 浏览、上传、下载、重命名、移动、复制、删除（目录递归删除）、新建文件夹 |
-| 上传 | 拖拽上传、文件夹拖入、大文件分片上传、上传进度与并发控制 |
+| 上传 | 拖拽上传、**拖入/选择整个文件夹并保留目录结构（含空目录）**、大文件分片上传、上传进度与并发控制 |
+| 在线编辑 | 直接编辑 txt / js / py / json / md / yaml… 等文本文件；识别 20+ 种语言做语法着色，JSON 有实时校验与一键格式化；任何文件都能「以文本方式打开」兜底 |
+| 编辑内搜索 | 编辑时按关键词高亮全部匹配、上一个/下一个跳转、显示 `n/m` 计数、可切换区分大小写 |
 | 预览 | 图片、视频缩略图，PDF 缩略图，无缩略图时按 MIME 类型显示图标 |
 | 批量操作 | 多选文件与目录，批量移动、复制、删除、下载 |
 | 浏览体验 | 搜索当前目录、按名称/大小排序、面包屑导航、当前目录写进 URL（可前进后退/分享定位） |
 | 权限感知 | 无写权限的账号自动进入只读模式：隐藏上传与改动入口，列表上标注「只读」 |
 | 打包下载 | 目录一键递归打包为 zip 下载 |
+| 开放接口 | 生成式 **API Key**（只存摘要、可限定目录与有效期、随时吊销），`POST /api/upload/{path}` 一行 curl 上传 |
 | WebDAV | 标准 WebDAV 服务端，Windows / macOS / rclone 等客户端可直接挂载，支持锁（class 2） |
-| 权限 | 多账号，每个账号按**路径前缀白名单**授权，读写都受约束 |
+| 权限 | 多账号，每个账号按**路径前缀白名单**授权，读写都受约束；API Key 另有独立白名单 |
 | 分享 | 公开只读分享（匿名可读），根目录 HTML 浏览页 |
+
+> **移动端说明**：手机浏览器内核不提供「选择整个文件夹」的能力（不是本项目的问题），
+> 因此移动端会把「上传文件夹」按钮换成一句提示，建议用「文件」多选，或安装 WebDAV 客户端
+> （如 Cx 文件管理器）挂载本网盘后上传文件夹。桌面端不受影响。
+> 在线编辑与语法着色属于网页端功能，需要联网加载 CDN 上的 Vue 与 pdf.js。
 
 ---
 
@@ -188,6 +196,53 @@ Cloudflare Workers 对单个请求体有大小上限（免费版约 **100MB**）
 
 ---
 
+## API Key 与脚本上传
+
+网页端顶部菜单里有「API 密钥」（需要主账号且拥有全部目录权限），可以直接在界面上生成密钥。
+密钥只在生成时显示一次，服务端只保存 SHA-256 摘要，泄露了随时可以吊销；
+生成时还可以限定目录范围与有效期，例如只允许写入 `backup/`、90 天后自动失效。
+
+### 密钥怎么带
+
+| 方式 | 示例 |
+| --- | --- |
+| 自定义头（推荐） | `-H "X-Api-Key: fd_xxxxxxxxxx_yyyy..."` |
+| Bearer | `-H "Authorization: Bearer fd_xxxxxxxxxx_yyyy..."` |
+| WebDAV 客户端的密码位 | 用户名随便填，密码填密钥（兼容只支持 Basic 的客户端） |
+
+密钥对 `/webdav/*`、`/api/list`、`/api/zip`、`/raw`、`/api/upload` 全部生效：
+既能**上传**，也能**读取**（列目录、下载、直链访问），可操作范围就是创建时指定的路径前缀白名单。
+
+### 一行 curl 上传
+
+```bash
+# 上传到 backup/ 目录，对象名沿用本地文件名
+curl -X POST https://<域名>/api/upload/backup/ \
+  -H "X-Api-Key: fd_xxxxxxxxxx_yyyy..." \
+  -F "file=@backup.zip"
+
+# 指定完整对象名，原始字节流
+curl -X PUT https://<域名>/api/upload/backup/today.bin \
+  -H "X-Api-Key: fd_xxxxxxxxxx_yyyy..." \
+  --data-binary @today.bin
+```
+
+父目录不存在会自动创建；成功返回 `{key, size, uploaded, url}`。
+单请求体上限由 `WEBDAV_MAX_PUT_SIZE` 控制（默认 100MB），更大的文件请走网页端分片上传。
+
+### 管理接口
+
+| 接口 | 方法 | 说明 |
+| --- | --- | --- |
+| `/api/keys` | `GET` | 列出密钥（只返回备注名、前缀提示、权限与时间，拿不回明文） |
+| `/api/keys` | `POST` | 创建密钥，body 形如 `{"name":"备份脚本","permissions":"backup/","expiresInDays":90}` |
+| `/api/keys/{id}` | `DELETE` | 吊销密钥 |
+
+> 管理密钥要求**主账号且权限为 `*`**，API Key 本身不能用来签发新密钥。
+> 密钥记录存在 R2 的内部目录 `_$flaredrive$/` 下，**不需要任何额外环境变量或绑定**。
+
+---
+
 ## 目录的数据表示
 
 R2 是对象存储，没有真正的目录。本项目用三种形式表示目录，读取时都能识别：
@@ -234,6 +289,8 @@ R2 是对象存储，没有真正的目录。本项目用三种形式表示目�
 6. 遵循最小权限：能只给某个子目录就别给 `*`。
 7. **不要提交任何密钥到仓库**：账号密码只放在 Cloudflare 的环境变量里，本地开发用 `.dev.vars`（已在 `.gitignore` 中忽略）。
 8. 不要开启存储桶的公开访问 / `r2.dev` 公共域名，本项目不需要它。
+9. 用 **API Key** 而不是主账号密码给脚本/第三方程序调用（见上文），并按最小权限限定目录、
+   设置有效期；密钥泄露时直接吊销即可，不影响主账号。管理密钥的入口只对主账号开放。
 
 ---
 
@@ -243,9 +300,12 @@ R2 是对象存储，没有真正的目录。本项目用三种形式表示目�
 
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
-| `/api/whoami` | `GET` | 登录状态与能力探测：用户名、权限、是否公开读、是否只读、单次上传上限、是否启用锁 |
+| `/api/whoami` | `GET` | 登录状态与能力探测：用户名、权限、是否公开读、是否只读、单次上传上限、是否启用锁、是否 API Key 登录 |
 | `/api/list/{path}` | `GET` | 列出目录**直接子项**（不递归），返回 `files` 与 `folders`；无权限 `403`、不存在 `404` |
 | `/api/zip/{path}` | `GET` | 把目录（递归）或单个文件打包为 zip 下载；超过 `WEBDAV_MAX_ZIP_SIZE` 返回 `413` |
+| `/api/upload/{path}` | `POST` / `PUT` | 脚本上传接口，支持 API Key；`multipart/form-data` 或原始字节流 |
+| `/api/keys` | `GET` / `POST` | 列举 / 创建 API Key（仅主账号） |
+| `/api/keys/{id}` | `DELETE` | 吊销 API Key（仅主账号） |
 | `/raw/{key}` | `GET` | 直接返回对象字节，支持 `Range` 与条件请求；缩略图带长缓存头 |
 | `/webdav/*` | 全部 WebDAV 方法 | WebDAV 服务端，网页端的写操作也走这里，与标准客户端同一套实现 |
 
@@ -287,7 +347,7 @@ npx wrangler pages dev . --r2 BUCKET --persist-to .wrangler/state
 
 ### 冒烟测试
 
-仓库自带一套 WebDAV / API 冒烟测试（140 项断言，覆盖全部 WebDAV 方法、锁、Range、权限、旧格式兼容、zip 打包等），本地起好服务后直接跑：
+仓库自带一套 WebDAV / API 冒烟测试（168 项断言，覆盖全部 WebDAV 方法、锁、Range、权限、API Key、旧格式兼容、zip 打包完整性等），本地起好服务后直接跑：
 
 ```bash
 bash scripts/smoke-test.sh
@@ -317,12 +377,17 @@ Cloudflare-R2-oss/
 ├── robots.txt          # 爬虫规则
 │
 ├── assets/             # 纯静态前端资源，原样发布，不经打包
-│   ├── App.vue         # 应用主组件：列表、导航、上传、多选、WebDAV 请求封装
-│   ├── Menu.vue        # 右键/操作菜单（重命名、移动、复制、删除、下载…）
-│   ├── Dialog.vue      # 通用弹窗
-│   ├── UploadPopup.vue # 上传弹窗：拖拽、分片、进度
+│   ├── App.vue         # 应用主组件：列表、导航、上传、多选、右键菜单、各弹窗接线
+│   ├── LoginDialog.vue # 登录弹窗（HTTP Basic，凭据存 localStorage）
+│   ├── FolderPicker.vue# 可导航的目录选择器：移动目标、API Key 授权目录（支持多选）
+│   ├── TextEditor.vue  # 在线文本编辑器：语法着色、编辑内搜索定位、JSON 校验与格式化
+│   ├── ApiKeys.vue     # API Key 管理：生成、列举、吊销、复制 curl 示例
+│   ├── UploadPopup.vue # 上传弹窗：拍照/图片视频/文件/文件夹/新建文件夹
+│   ├── Menu.vue        # 下拉菜单（排序、粘贴、登录、API 密钥…）
+│   ├── Dialog.vue      # 通用弹窗容器
 │   ├── MimeIcon.vue    # 按 MIME 类型渲染文件图标
-│   ├── main.mjs        # 前端逻辑模块，被 App.vue 引用
+│   ├── main.mjs        # 前端逻辑模块：认证、请求封装、路径工具、缩略图、分片上传、
+│   │                   # 文本类型判定、语言识别与词法着色
 │   ├── main.css        # 样式
 │   ├── manifest.json   # PWA manifest
 │   ├── favicon.png     # 站点图标
@@ -331,25 +396,33 @@ Cloudflare-R2-oss/
 ├── functions/          # Pages Functions 后端，文件路径 = URL 路径
 │   ├── webdav/         # WebDAV 服务端：OPTIONS/PROPFIND/PROPPATCH/MKCOL/GET/HEAD/
 │   │                   # PUT/POST 分片/COPY/MOVE/DELETE/LOCK/UNLOCK
-│   ├── api/            # 网页端 JSON 接口：whoami、list、zip
+│   ├── api/            # 网页端与脚本接口
+│   │   ├── whoami.ts   # 登录状态与能力探测
+│   │   ├── list/       # 目录列举（JSON）
+│   │   ├── zip/        # 目录打包下载
+│   │   ├── upload/     # 给脚本用的上传接口，支持 API Key
+│   │   └── keys/       # API Key 的创建 / 列举 / 吊销
 │   └── raw/            # 对象字节直出：Range、条件请求、缩略图缓存头
 │
 ├── utils/              # 后端共享模块
 │   ├── config.ts       # 环境变量与常量：前缀、各类上限、功能开关
-│   ├── auth.ts         # 账号解析、Basic 认证、路径前缀权限判定
+│   ├── auth.ts         # 账号解析、Basic 认证、API Key 接入、权限判定入口
+│   ├── permissions.ts  # 路径规范化和前缀白名单判定（被 auth / apikey 共用）
+│   ├── apikey.ts       # API Key 存储与校验（只存 SHA-256 摘要）
 │   ├── bucket.ts       # 路由前缀解析、桶选择、统一错误响应
 │   ├── core.ts         # R2 文件系统层：列举 / 探测 / 写入 / 复制 / 递归删除
 │   ├── lock.ts         # WebDAV 锁存储（锁记录放在 R2 内部目录，跨实例可见）
 │   ├── serve.ts        # Range 与条件请求输出、目录 HTML 浏览页
+│   ├── zip.ts          # 零依赖流式 ZIP 写入器（store 模式）
 │   └── xml.ts          # XML 转义、multistatus 构造、请求体解析
 │
 ├── docs/
 │   └── API.md          # 网页端与后端的接口契约（冻结文件，改动需同步）
 │
 ├── scripts/
-│   └── smoke-test.sh   # WebDAV / API 冒烟测试，140 项断言
+│   └── smoke-test.sh   # WebDAV / API 冒烟测试，168 项断言
 │
-├── package.json        # 运行依赖：fflate（目录打包）；开发依赖：wrangler
+├── package.json        # 没有任何运行时依赖；开发依赖只有 wrangler
 ├── tsconfig.json       # TypeScript 配置，仅供编辑器类型提示，不参与构建
 └── .gitignore          # 忽略 .wrangler/、.dev.vars 等本地文件
 ```

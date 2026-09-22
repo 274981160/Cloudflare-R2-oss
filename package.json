@@ -8,9 +8,7 @@
     "dev": "wrangler pages dev . --r2 BUCKET --persist-to .wrangler/state",
     "deploy": "wrangler pages deploy ."
   },
-  "dependencies": {
-    "fflate": "^0.8.2"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260921.1",
     "wrangler": "^4.0.0"

@@ -758,6 +758,693 @@ export function isPreviewable(contentType) {
   return previewKind(contentType) !== null;
 }
 
+/** 可在线按文本编辑的扩展名（不含点，全小写） */
+export const TEXT_FILE_EXTENSIONS = [
+  // 纯文本 / 文档
+  "txt", "text", "log", "md", "markdown", "rst", "adoc", "org",
+  "tex", "bib", "srt", "vtt", "ass", "ssa", "diff", "patch",
+  // 数据 / 配置
+  "json", "jsonc", "json5", "yml", "yaml", "toml", "ini", "cfg", "conf",
+  "env", "properties", "prop", "lock", "editorconfig", "eslintrc",
+  "prettierrc", "babelrc", "browserslist", "gitattributes", "gitignore",
+  "npmrc", "htaccess", "nginx", "csv", "tsv", "tab", "sql", "graphql",
+  "gql", "proto", "thrift", "avsc", "tf", "tfvars", "hcl",
+  // 脚本
+  "sh", "bash", "zsh", "fish", "ksh", "ps1", "bat", "cmd", "py", "pyw",
+  "rb", "rake", "pl", "pm", "lua", "php", "r", "jl", "groovy", "gradle",
+  "clj", "cljs", "cljc", "edn", "ex", "exs", "erl", "hrl", "hs", "lhs",
+  "ml", "mli", "fs", "fsx", "vb", "vbs", "pas", "d", "pr", "swift", "dart",
+  // 源码
+  "js", "mjs", "cjs", "jsx", "ts", "tsx", "mts", "cts", "vue", "svelte",
+  "astro", "css", "scss", "sass", "less", "styl", "html", "htm", "xhtml",
+  "xml", "svg", "java", "kt", "kts", "scala", "go", "rs", "c", "h", "cc",
+  "cpp", "cxx", "hpp", "hh", "hxx", "cs", "csx", "m", "mm", "asm", "s",
+  // 构建工具
+  "makefile", "cmake", "mk", "dockerfile",
+];
+
+/** 没有扩展名但按文本处理的常见文件名 */
+export const TEXT_FILE_NAMES = [
+  "dockerfile", "makefile", "rakefile", "gemfile", "procfile",
+  "license", "readme", "changelog",
+];
+
+/** 除 `text/*` 外，仍然按文本处理的 MIME 类型 */
+export const TEXT_APPLICATION_TYPES = [
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/x-javascript",
+  "application/ecmascript",
+  "application/x-httpd-php",
+  "application/x-sh",
+  "application/x-shellscript",
+  "application/x-yaml",
+  "application/yaml",
+  "application/xhtml+xml",
+  "application/x-ndjson",
+  "application/graphql",
+  "application/sql",
+  "application/toml",
+];
+
+/**
+ * 判断某个对象能不能按文本在线编辑。
+ * 判定顺序：MIME 类型 → 扩展名 → 无扩展名的常见文本文件名。
+ * @param {string} name 文件名（也可以直接传对象键）
+ * @param {string} [contentType]
+ */
+export function isTextFile(name, contentType) {
+  const type = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (type.startsWith("text/")) return true;
+  if (TEXT_APPLICATION_TYPES.indexOf(type) !== -1) return true;
+
+  const value = basename(String(name == null ? "" : name).trim().toLowerCase());
+  if (!value) return false;
+  const dot = value.lastIndexOf(".");
+  if (dot === -1) return TEXT_FILE_NAMES.indexOf(value) !== -1;
+  // `.gitignore` 这类以点开头的名字，整串就是扩展名
+  const extension = dot === 0 ? value.slice(1) : value.slice(dot + 1);
+  if (!extension) return false;
+  return TEXT_FILE_EXTENSIONS.indexOf(extension) !== -1;
+}
+
+/* ------------------------------------------------------------------ *
+ * 浏览器能力：能否选择整个文件夹上传
+ * ------------------------------------------------------------------ */
+
+/** 移动端 UA 特征（Blink 会谎报支持 webkitdirectory，必须按 UA 排除） */
+const MOBILE_UA_PATTERN =
+  /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|Windows Phone|BlackBerry|webOS/i;
+
+/**
+ * 当前浏览器是否真的能通过 `<input webkitdirectory>` 选择整个文件夹。
+ * iOS Safari / Android Chrome 只是没有选文件夹入口，无法在前端绕过。
+ * 注意：不用 `(pointer: coarse)` 判断，触屏笔记本其实可以选文件夹。
+ */
+export function supportsDirectoryUpload() {
+  if (typeof document === "undefined") return false;
+  let input;
+  try {
+    input = document.createElement("input");
+  } catch (error) {
+    return false;
+  }
+  if (!("webkitdirectory" in input)) return false;
+  const nav = typeof navigator === "undefined" ? null : navigator;
+  const ua = nav ? String(nav.userAgent || nav.vendor || "") : "";
+  if (MOBILE_UA_PATTERN.test(ua)) return false;
+  // iPadOS 13+ 默认请求桌面版，UA 伪装成 Macintosh：用触点数兜底识别
+  if (/Macintosh/i.test(ua) && nav && Number(nav.maxTouchPoints) > 1) return false;
+  return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 语法识别与词法着色（在线编辑器用，无任何外部依赖）
+ * ------------------------------------------------------------------ */
+
+/** 超过这个长度就不做着色（仍保留搜索），避免大文件卡顿 */
+export const MAX_HIGHLIGHT_SIZE = 300 * 1024;
+
+/** 扩展名 → 语言 id */
+const LANGUAGE_BY_EXTENSION = {
+  json: "json", json5: "json", jsonc: "json", geojson: "json", avsc: "json",
+  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+  ts: "typescript", tsx: "typescript", mts: "typescript", cts: "typescript",
+  py: "python", pyw: "python",
+  sh: "shell", bash: "shell", zsh: "shell", fish: "shell", ksh: "shell",
+  html: "html", htm: "html", vue: "html", svelte: "html", astro: "html",
+  xml: "xml", svg: "xml", xsl: "xml", xslt: "xml", plist: "xml",
+  css: "css", scss: "css", sass: "css", less: "css", styl: "css",
+  md: "markdown", markdown: "markdown",
+  yml: "yaml", yaml: "yaml",
+  ini: "ini", cfg: "ini", conf: "ini", env: "ini", properties: "ini",
+  prop: "ini", toml: "ini", editorconfig: "ini",
+  sql: "sql",
+  java: "java",
+  go: "go",
+  rs: "rust",
+  c: "c", h: "c", cc: "c", cpp: "c", cxx: "c", hpp: "c", hh: "c", hxx: "c",
+  php: "php",
+  rb: "ruby", rake: "ruby",
+  log: "log",
+};
+
+/** MIME 类型 → 语言 id（扩展名认不出时的兜底） */
+const LANGUAGE_BY_MIME = {
+  "application/json": "json",
+  "application/ld+json": "json",
+  "application/javascript": "javascript",
+  "text/javascript": "javascript",
+  "application/ecmascript": "javascript",
+  "text/html": "html",
+  "application/xhtml+xml": "html",
+  "application/xml": "xml",
+  "text/xml": "xml",
+  "text/css": "css",
+  "text/markdown": "markdown",
+  "application/x-yaml": "yaml",
+  "application/yaml": "yaml",
+  "application/sql": "sql",
+  "application/x-httpd-php": "php",
+  "application/x-sh": "shell",
+  "application/x-shellscript": "shell",
+  "text/x-python": "python",
+  "text/x-java": "java",
+  "text/x-c": "c",
+  "text/x-rust": "rust",
+};
+
+/** 语言 id → 展示名 */
+const LANGUAGE_LABELS = {
+  json: "JSON",
+  javascript: "JavaScript",
+  typescript: "TypeScript",
+  python: "Python",
+  shell: "Shell",
+  html: "HTML",
+  xml: "XML",
+  css: "CSS",
+  markdown: "Markdown",
+  yaml: "YAML",
+  ini: "INI",
+  sql: "SQL",
+  java: "Java",
+  go: "Go",
+  rust: "Rust",
+  c: "C/C++",
+  php: "PHP",
+  ruby: "Ruby",
+  log: "日志",
+  plaintext: "纯文本",
+};
+
+/**
+ * 识别语言。
+ * @param {string} name 文件名（也接受对象键）
+ * @param {string} [contentType]
+ * @returns {{id: string, label: string}}
+ */
+export function detectLanguage(name, contentType) {
+  const value = basename(String(name == null ? "" : name).trim().toLowerCase());
+  const dot = value.lastIndexOf(".");
+  const extension = dot > 0 ? value.slice(dot + 1) : "";
+  if (extension && LANGUAGE_BY_EXTENSION[extension]) {
+    const id = LANGUAGE_BY_EXTENSION[extension];
+    return { id, label: LANGUAGE_LABELS[id] || id };
+  }
+  const type = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (type && LANGUAGE_BY_MIME[type]) {
+    const id = LANGUAGE_BY_MIME[type];
+    return { id, label: LANGUAGE_LABELS[id] || id };
+  }
+  return { id: "plaintext", label: LANGUAGE_LABELS.plaintext };
+}
+
+const JS_KEYWORDS = [
+  "const", "let", "var", "function", "return", "if", "else", "for", "while", "do",
+  "switch", "case", "break", "continue", "new", "class", "extends", "super", "this",
+  "typeof", "instanceof", "in", "of", "delete", "void", "yield", "await", "async",
+  "import", "export", "from", "default", "try", "catch", "finally", "throw",
+  "debugger", "static", "get", "set", "with",
+];
+const TS_KEYWORDS = JS_KEYWORDS.concat([
+  "interface", "type", "enum", "namespace", "declare", "readonly", "abstract",
+  "implements", "public", "private", "protected", "as", "is", "keyof", "infer",
+  "satisfies", "override",
+]);
+const JS_LITERALS = ["true", "false", "null", "undefined", "NaN", "Infinity"];
+
+/** 各语言的词法规则；undefined 表示不着色 */
+const TOKEN_RULES = {
+  json: {
+    quotes: ['"'],
+    keywords: [],
+    literals: ["true", "false", "null"],
+    stringKeys: true,
+  },
+  javascript: {
+    lineComment: "//",
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'", "`"],
+    keywords: JS_KEYWORDS,
+    literals: JS_LITERALS,
+    stringKeys: true,
+  },
+  typescript: {
+    lineComment: "//",
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'", "`"],
+    keywords: TS_KEYWORDS,
+    literals: JS_LITERALS,
+    stringKeys: true,
+  },
+  python: {
+    hashComment: true,
+    tripleQuotes: true,
+    quotes: ['"', "'"],
+    keywords: [
+      "def", "class", "return", "if", "elif", "else", "for", "while", "in", "not",
+      "and", "or", "is", "lambda", "import", "from", "as", "pass", "break",
+      "continue", "try", "except", "finally", "raise", "with", "yield", "global",
+      "nonlocal", "del", "assert", "async", "await", "match", "case",
+    ],
+    literals: ["True", "False", "None", "self", "cls"],
+  },
+  shell: {
+    hashComment: true,
+    quotes: ['"', "'"],
+    keywords: [
+      "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done",
+      "case", "esac", "function", "return", "exit", "export", "local", "readonly",
+      "declare", "source", "alias", "unset", "set", "echo", "printf", "cd", "pwd",
+      "read", "test", "trap", "eval", "exec", "sudo", "shift",
+    ],
+    literals: ["true", "false"],
+  },
+  html: { markup: true },
+  xml: { markup: true },
+  css: {
+    lineComment: null,
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'"],
+    keywords: [
+      "@media", "@import", "@charset", "@keyframes", "@supports", "@font-face",
+      "@namespace", "@page", "important",
+    ],
+    literals: [],
+    propertyKeys: true,
+    propertySeparator: ":",
+  },
+  yaml: {
+    hashComment: true,
+    quotes: ['"', "'"],
+    keywords: [],
+    literals: ["true", "false", "null", "yes", "no", "on", "off"],
+    propertyKeys: true,
+    propertySeparator: ":",
+  },
+  ini: {
+    hashComment: true,
+    semicolonComment: true,
+    quotes: ['"', "'"],
+    keywords: [],
+    literals: ["true", "false", "null", "yes", "no", "on", "off"],
+    propertyKeys: true,
+    propertySeparator: "=:",
+  },
+  sql: {
+    lineComment: "--",
+    blockComment: ["/*", "*/"],
+    quotes: ["'", '"'],
+    keywords: [
+      "select", "from", "where", "insert", "into", "values", "update", "set",
+      "delete", "create", "table", "view", "index", "drop", "alter", "add",
+      "join", "left", "right", "inner", "outer", "full", "cross", "on", "group",
+      "by", "order", "having", "limit", "offset", "union", "all", "distinct",
+      "as", "and", "or", "not", "null", "is", "like", "between", "exists",
+      "primary", "key", "foreign", "references", "default", "constraint",
+      "count", "sum", "avg", "min", "max", "case", "when", "then", "end",
+      "begin", "commit", "rollback", "with", "returning", "if", "else",
+    ],
+    literals: ["true", "false", "null"],
+    caseInsensitiveKeywords: true,
+  },
+  java: {
+    lineComment: "//",
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'"],
+    keywords: [
+      "public", "private", "protected", "class", "interface", "enum", "extends",
+      "implements", "new", "return", "if", "else", "for", "while", "do", "switch",
+      "case", "break", "continue", "static", "final", "void", "import", "package",
+      "try", "catch", "finally", "throw", "throws", "this", "super", "abstract",
+      "synchronized", "volatile", "transient", "native", "instanceof", "record",
+      "sealed", "permits", "var",
+    ],
+    literals: ["true", "false", "null"],
+  },
+  go: {
+    lineComment: "//",
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'", "`"],
+    keywords: [
+      "func", "package", "import", "var", "const", "type", "struct", "interface",
+      "map", "chan", "go", "defer", "return", "if", "else", "for", "range",
+      "switch", "case", "break", "continue", "select", "default", "fallthrough",
+      "goto",
+    ],
+    literals: ["true", "false", "nil", "iota"],
+  },
+  rust: {
+    lineComment: "//",
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'"],
+    keywords: [
+      "fn", "let", "mut", "const", "static", "struct", "enum", "impl", "trait",
+      "pub", "use", "mod", "match", "if", "else", "for", "while", "loop",
+      "return", "break", "continue", "where", "as", "dyn", "ref", "move",
+      "self", "Self", "super", "crate", "unsafe", "async", "await", "in",
+    ],
+    literals: ["true", "false", "None", "Some", "Ok", "Err"],
+  },
+  c: {
+    lineComment: "//",
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'"],
+    keywords: [
+      "int", "char", "float", "double", "void", "long", "short", "unsigned",
+      "signed", "struct", "union", "enum", "typedef", "static", "const", "return",
+      "if", "else", "for", "while", "do", "switch", "case", "break", "continue",
+      "goto", "sizeof", "extern", "volatile", "register", "inline", "class",
+      "public", "private", "protected", "new", "delete", "template", "namespace",
+      "using", "virtual", "try", "catch", "throw", "constexpr", "noexcept",
+      "nullptr", "auto", "bool",
+    ],
+    literals: ["true", "false", "NULL", "nullptr"],
+  },
+  php: {
+    lineComment: "//",
+    hashComment: true,
+    blockComment: ["/*", "*/"],
+    quotes: ['"', "'"],
+    keywords: [
+      "function", "class", "interface", "trait", "extends", "implements",
+      "public", "private", "protected", "static", "return", "if", "else",
+      "elseif", "foreach", "for", "while", "do", "switch", "case", "break",
+      "continue", "new", "echo", "print", "require", "require_once", "include",
+      "include_once", "namespace", "use", "try", "catch", "finally", "throw",
+      "as", "instanceof", "abstract", "final", "const", "global",
+    ],
+    literals: ["true", "false", "null"],
+    caseInsensitiveKeywords: true,
+  },
+  ruby: {
+    hashComment: true,
+    quotes: ['"', "'"],
+    keywords: [
+      "def", "end", "class", "module", "if", "elsif", "else", "unless", "while",
+      "until", "for", "do", "then", "begin", "rescue", "ensure", "return",
+      "yield", "require", "require_relative", "attr_accessor", "attr_reader",
+      "attr_writer", "puts", "print", "lambda", "proc", "new", "self", "super",
+      "raise", "case", "when", "in", "and", "or", "not",
+    ],
+    literals: ["true", "false", "nil", "__FILE__", "__LINE__"],
+  },
+  log: {
+    hashComment: true,
+    quotes: ['"', "'"],
+    keywords: [
+      "ERROR", "ERR", "WARN", "WARNING", "INFO", "DEBUG", "TRACE", "FATAL",
+      "CRITICAL", "NOTICE",
+    ],
+    literals: ["true", "false", "null"],
+  },
+  markdown: { markdown: true },
+};
+
+/** 紧跟位置之后的第一个非空白字符（不复制字符串） */
+function nextNonSpaceChar(text, index) {
+  let cursor = index;
+  while (cursor < text.length && (text[cursor] === " " || text[cursor] === "\t")) cursor++;
+  return cursor < text.length ? text[cursor] : "";
+}
+
+/** 扫描一个字符串字面量（含转义），返回结束位置（不含引号本身之后） */
+function scanString(text, start, quote, escapes) {
+  let cursor = start + 1;
+  while (cursor < text.length) {
+    const char = text[cursor];
+    if (escapes && char === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (char === quote) return cursor + 1;
+    if (char === "\n") return cursor; // 未闭合：在行尾收手
+    cursor++;
+  }
+  return text.length;
+}
+
+const NUMBER_PATTERN =
+  /(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO][0-7_]+|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?\d+)?)/y;
+const WORD_PATTERN = /[A-Za-z_$@][\w$]*/y;
+const PUNCTUATION_CHARS = "(){}[];,.:=+-*/%<>!&|^~?@#\\";
+
+/** 单趟扫描 C 系/脚本类语言 */
+function tokenizeCode(text, rules) {
+  const tokens = [];
+  const length = text.length;
+  const quotes = rules.quotes || [];
+  const keywords = rules.keywords || [];
+  const literals = rules.literals || [];
+  const blockComment = rules.blockComment || null;
+  const lineComment = rules.lineComment || null;
+  const separators = rules.propertySeparator || ":";
+  let index = 0;
+
+  const push = (start, end, type) => {
+    if (end > start) tokens.push({ start, end, type });
+  };
+
+  while (index < length) {
+    const char = text[index];
+
+    if (blockComment && text.startsWith(blockComment[0], index)) {
+      const found = text.indexOf(blockComment[1], index + blockComment[0].length);
+      const stop = found === -1 ? length : found + blockComment[1].length;
+      push(index, stop, "comment");
+      index = stop;
+      continue;
+    }
+
+    if (lineComment && text.startsWith(lineComment, index)) {
+      const found = text.indexOf("\n", index);
+      const stop = found === -1 ? length : found;
+      push(index, stop, "comment");
+      index = stop;
+      continue;
+    }
+
+    if ((rules.hashComment && char === "#") || (rules.semicolonComment && char === ";")) {
+      const found = text.indexOf("\n", index);
+      const stop = found === -1 ? length : found;
+      push(index, stop, "comment");
+      index = stop;
+      continue;
+    }
+
+    if (rules.tripleQuotes && (text.startsWith('"""', index) || text.startsWith("'''", index))) {
+      const quote = text.slice(index, index + 3);
+      const found = text.indexOf(quote, index + 3);
+      const stop = found === -1 ? length : found + 3;
+      push(index, stop, "string");
+      index = stop;
+      continue;
+    }
+
+    if (quotes.indexOf(char) !== -1) {
+      const stop = scanString(text, index, char, true);
+      const isKey = rules.stringKeys && nextNonSpaceChar(text, stop) === ":";
+      push(index, stop, isKey ? "property" : "string");
+      index = stop;
+      continue;
+    }
+
+    if (char >= "0" && char <= "9") {
+      NUMBER_PATTERN.lastIndex = index;
+      const match = NUMBER_PATTERN.exec(text);
+      if (match && match.index === index) {
+        push(index, index + match[0].length, "number");
+        index += match[0].length;
+        continue;
+      }
+    }
+
+    WORD_PATTERN.lastIndex = index;
+    const word = WORD_PATTERN.exec(text);
+    if (word && word.index === index) {
+      const value = word[0];
+      const compare = rules.caseInsensitiveKeywords ? value.toLowerCase() : value;
+      const pool = rules.caseInsensitiveKeywords
+        ? keywords.map((item) => item.toLowerCase())
+        : keywords;
+      let type = null;
+      if (pool.indexOf(compare) !== -1) type = "keyword";
+      else if (literals.indexOf(value) !== -1) type = "literal";
+      else if (
+        rules.propertyKeys &&
+        separators.indexOf(nextNonSpaceChar(text, index + value.length)) !== -1
+      ) {
+        type = "property";
+      }
+      if (type) push(index, index + value.length, type);
+      index += value.length;
+      continue;
+    }
+
+    if (PUNCTUATION_CHARS.indexOf(char) !== -1) {
+      push(index, index + 1, "punctuation");
+      index++;
+      continue;
+    }
+
+    index++;
+  }
+
+  return tokens;
+}
+
+const MARKUP_NAME_PATTERN = /[A-Za-z_][\w:.-]*/y;
+const MARKUP_ATTR_PATTERN = /[A-Za-z_@:][\w:.-]*/y;
+
+/** 单趟扫描 HTML / XML */
+function tokenizeMarkup(text) {
+  const tokens = [];
+  const length = text.length;
+  let index = 0;
+  const push = (start, end, type) => {
+    if (end > start) tokens.push({ start, end, type });
+  };
+
+  while (index < length) {
+    const start = text.indexOf("<", index);
+    if (start === -1) break;
+
+    if (text.startsWith("<!--", start)) {
+      const found = text.indexOf("-->", start + 4);
+      const stop = found === -1 ? length : found + 3;
+      push(start, stop, "comment");
+      index = stop;
+      continue;
+    }
+    if (text.startsWith("<!", start) || text.startsWith("<?", start)) {
+      const found = text.indexOf(">", start);
+      const stop = found === -1 ? length : found + 1;
+      push(start, stop, "comment");
+      index = stop;
+      continue;
+    }
+
+    const found = text.indexOf(">", start);
+    const stop = found === -1 ? length : found + 1;
+    push(start, start + 1, "punctuation");
+    let cursor = start + 1;
+    if (text[cursor] === "/") cursor++;
+    MARKUP_NAME_PATTERN.lastIndex = cursor;
+    const name = MARKUP_NAME_PATTERN.exec(text);
+    if (name && name.index === cursor) {
+      push(cursor, cursor + name[0].length, "tag");
+      cursor += name[0].length;
+    }
+    while (cursor < stop) {
+      const char = text[cursor];
+      if (char === ">") {
+        push(cursor, cursor + 1, "punctuation");
+        cursor++;
+        break;
+      }
+      if (char === "/" && text[cursor + 1] === ">") {
+        push(cursor, cursor + 2, "punctuation");
+        cursor += 2;
+        break;
+      }
+      if (char === '"' || char === "'") {
+        const end = scanString(text, cursor, char, true);
+        push(cursor, end, "string");
+        cursor = end > cursor ? end : cursor + 1;
+        continue;
+      }
+      MARKUP_ATTR_PATTERN.lastIndex = cursor;
+      const attr = MARKUP_ATTR_PATTERN.exec(text);
+      if (attr && attr.index === cursor) {
+        push(cursor, cursor + attr[0].length, "attr");
+        cursor += attr[0].length;
+        continue;
+      }
+      if (char === "=") push(cursor, cursor + 1, "punctuation");
+      cursor++;
+    }
+    index = stop;
+  }
+
+  return tokens;
+}
+
+/** Markdown：围栏代码块 / 标题 / 行内代码 / 强调 / 链接 / 引用与列表符号 */
+function tokenizeMarkdown(text) {
+  const tokens = [];
+  const length = text.length;
+  const push = (start, end, type) => {
+    if (end > start) tokens.push({ start, end, type });
+  };
+  let lineStart = 0;
+  let inFence = false;
+
+  while (lineStart <= length) {
+    let lineEnd = text.indexOf("\n", lineStart);
+    if (lineEnd === -1) lineEnd = length;
+    const line = text.slice(lineStart, lineEnd);
+
+    if (/^\s*(```|~~~)/.test(line)) {
+      push(lineStart, lineEnd, "string");
+      inFence = !inFence;
+    } else if (inFence) {
+      push(lineStart, lineEnd, "string");
+    } else {
+      const heading = /^\s{0,3}(#{1,6})(\s|$)/.exec(line);
+      if (heading) push(lineStart + line.indexOf("#"), lineStart + line.indexOf("#") + heading[1].length, "keyword");
+      const quote = /^\s{0,3}>/.exec(line);
+      if (quote) push(lineStart + line.indexOf(">"), lineStart + line.indexOf(">") + 1, "punctuation");
+      const list = /^\s*(?:[-*+]|\d+\.)\s/.exec(line);
+      if (list) push(lineStart, lineStart + list[0].length, "punctuation");
+
+      const INLINE_PATTERN = /(`[^`]*`)|(\*\*[^*]+\*\*)|(__[^_]+__)|(\*[^*\n]+\*)|(_[^_\n]+_)|(\[[^\]\n]*\]\([^)\n]*\))/g;
+      let match = INLINE_PATTERN.exec(line);
+      while (match) {
+        const value = match[0];
+        const start = lineStart + match.index;
+        if (value.charAt(0) === "[") {
+          const split = value.indexOf("](");
+          push(start, start + split + 1, "attr");
+          push(start + split + 1, start + value.length, "string");
+        } else if (value.charAt(0) === "`") {
+          push(start, start + value.length, "string");
+        } else {
+          push(start, start + value.length, "keyword");
+        }
+        match = INLINE_PATTERN.exec(line);
+      }
+    }
+
+    if (lineEnd >= length) break;
+    lineStart = lineEnd + 1;
+  }
+
+  return tokens;
+}
+
+/**
+ * 词法着色：返回不重叠的 `{ start, end, type }` 列表。
+ * type ∈ comment | string | number | keyword | literal | property | tag | attr | punctuation
+ * 超过 MAX_HIGHLIGHT_SIZE 直接返回空数组（UI 仍保留搜索高亮）。
+ * @param {string} code
+ * @param {{id?: string}|string} language
+ */
+export function tokenize(code, language) {
+  const text = String(code == null ? "" : code);
+  if (!text || text.length > MAX_HIGHLIGHT_SIZE) return [];
+  const id =
+    language && typeof language === "object"
+      ? String(language.id || "plaintext")
+      : String(language || "plaintext");
+  const rules = TOKEN_RULES[id];
+  if (!rules) return [];
+  if (rules.markup) return tokenizeMarkup(text);
+  if (rules.markdown) return tokenizeMarkdown(text);
+  return tokenizeCode(text, rules);
+}
+
 /**
  * 重名时生成「xxx - 副本.ext」
  * @param {string} name

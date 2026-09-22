@@ -35,7 +35,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
       return notFound();
     }
 
-    const auth = authenticate(request, env);
+    const auth = await authenticate(request, env, bucket);
     if (auth.invalid) return unauthorized("用户名或密码不正确");
     const subject: Subject = {
       account: auth.account,

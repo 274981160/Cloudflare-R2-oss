@@ -27,7 +27,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     // 内部保留目录只允许直接访问缩略图
     if (isInternalPath(path) && !isThumbnailKey(path)) return notFound();
 
-    const auth = authenticate(request, env);
+    const auth = await authenticate(request, env, bucket);
     const subject: Subject = {
       account: auth.account,
       anonymous: auth.anonymous,

@@ -1,5 +1,3 @@
-import { Zip, ZipPassThrough } from "fflate";
-
 import { Env, maxZipSize } from "../../../utils/config";
 import {
   authenticate,
@@ -22,11 +20,15 @@ import {
   listAll,
   statPath,
 } from "../../../utils/core";
+import { ZipWriter } from "../../../utils/zip";
 
 interface ZipEntry {
   name: string;
+  /** 空字符串表示没有实际对象（目录条目或源对象已消失）。 */
   key: string;
+  isDirectory: boolean;
   size: number;
+  uploaded: Date | null;
 }
 
 function contentDisposition(filename: string): string {
@@ -37,8 +39,8 @@ function contentDisposition(filename: string): string {
 }
 
 /**
- * 目录打包下载。使用 store 模式（不压缩）流式输出：
- * 媒体文件本来压不动，这样 CPU 占用最低，也不会把整个包读进内存。
+ * 目录打包下载。store 模式流式输出：媒体文件本来压不动，这样 CPU 占用最低，
+ * 也不会把整个包读进内存。写入器是仓库自带的零依赖实现，见 utils/zip.ts。
  */
 export const onRequestGet: PagesFunction<Env> = async function (context) {
   try {
@@ -50,7 +52,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
 
     if (!path) return badRequest("不能打包根目录");
 
-    const auth = authenticate(request, env);
+    const auth = await authenticate(request, env, bucket);
     if (auth.invalid) return unauthorized("用户名或密码不正确");
     const subject: Subject = {
       account: auth.account,
@@ -74,7 +76,13 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     const archiveBase = baseName(path) || "download";
 
     if (!stat.isDirectory) {
-      entries.push({ name: baseName(path), key: path, size: stat.size });
+      entries.push({
+        name: baseName(path),
+        key: path,
+        isDirectory: false,
+        size: stat.size,
+        uploaded: stat.uploaded,
+      });
     } else {
       const prefix = `${path}/`;
       for await (const object of listAll(bucket, prefix, true)) {
@@ -86,19 +94,33 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
 
         // 目录对象以「以 / 结尾的零字节条目」写进包，解压后才是文件夹
         if (isDirectoryObject(object)) {
-          entries.push({ name: `${relative}/`, key: "", size: 0 });
+          entries.push({
+            name: `${relative}/`,
+            key: "",
+            isDirectory: true,
+            size: 0,
+            uploaded: object.uploaded instanceof Date ? object.uploaded : null,
+          });
           continue;
         }
 
         entries.push({
           name: relative,
           key,
+          isDirectory: false,
           size: typeof object.size === "number" ? object.size : 0,
+          uploaded: object.uploaded instanceof Date ? object.uploaded : null,
         });
       }
       if (entries.length === 0) {
         // 空目录也给出一个条目，解压后能看到文件夹
-        entries.push({ name: `${archiveBase}/`, key: "", size: 0 });
+        entries.push({
+          name: `${archiveBase}/`,
+          key: "",
+          isDirectory: true,
+          size: 0,
+          uploaded: null,
+        });
       }
     }
 
@@ -106,47 +128,31 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     const limit = maxZipSize(env);
     if (totalSize > limit) {
       return new Response(
-        `打包体积 ${totalSize} 字节超过上限 ${limit} 字节，请分批下载`,
+        `打包体积约 ${totalSize} 字节，超过上限 ${limit} 字节，请分批下载`,
         { status: 413, headers: { "Content-Type": "text/plain; charset=utf-8" } }
       );
     }
 
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
-        const zip = new Zip((error, chunk, final) => {
-          if (error) {
-            controller.error(error);
-            return;
-          }
-          controller.enqueue(chunk);
-          if (final) controller.close();
-        });
-
+        const writer = new ZipWriter(controller);
         try {
           for (const entry of entries) {
-            const file = new ZipPassThrough(entry.name);
-            zip.add(file);
-
-            if (!entry.key) {
-              file.push(new Uint8Array(0), true);
+            if (entry.isDirectory) {
+              writer.addDirectory(entry.name, entry.uploaded);
               continue;
             }
 
-            const object: any = await bucket.get(entry.key);
-            if (!object || !("body" in object)) {
-              file.push(new Uint8Array(0), true);
-              continue;
+            let body: ReadableStream<Uint8Array> | null = null;
+            if (entry.key) {
+              const object: any = await bucket.get(entry.key);
+              if (object && "body" in object) {
+                body = object.body as ReadableStream<Uint8Array>;
+              }
             }
-
-            const reader = (object.body as ReadableStream<Uint8Array>).getReader();
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) file.push(value, false);
-            }
-            file.push(new Uint8Array(0), true);
+            await writer.addFile(entry.name, body, entry.uploaded);
           }
-          zip.end();
+          writer.finish();
         } catch (error) {
           controller.error(error);
         }

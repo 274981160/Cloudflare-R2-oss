@@ -121,3 +121,109 @@
 | 413 | 超过大小上限 |
 | 423 | 资源被锁定且未提供锁令牌 |
 | 507 | 深度遍历超过条目上限 |
+
+## 8. API Key（生成式密钥）
+
+用于给脚本 / 第三方程序上传，而不必交出主账号密码。密钥只在创建时明文返回一次，
+服务端只保存 SHA-256 摘要。
+
+密钥格式：`fd_<id>_<secret>`，其中 `id` 为 10 位十六进制，`secret` 为 32 位十六进制。
+
+### 携带方式（任选其一）
+
+| 方式 | 示例 |
+| --- | --- |
+| 自定义头 | `X-Api-Key: fd_xxxxxxxxxx_yyyy...` |
+| Bearer | `Authorization: Bearer fd_xxxxxxxxxx_yyyy...` |
+| Basic 密码位 | `Authorization: Basic base64("apikey:fd_xxxxxxxxxx_yyyy...")` |
+
+第三种是为了兼容只支持 Basic 的 WebDAV 客户端：用户名随便填，密码填密钥即可。
+密钥对 `/webdav/*`、`/api/list`、`/api/zip`、`/raw`、`/api/upload` 全部生效，
+权限就是创建该密钥时指定的路径前缀白名单。
+
+### `GET /api/keys`
+
+列出全部密钥（不含明文，也不能反推）。需要**主账号**且权限含 `*`。
+API Key 本身没有管理密钥的权限。
+
+```json
+{
+  "keys": [
+    {
+      "id": "a1b2c3d4e5",
+      "name": "备份脚本",
+      "hint": "fd_a1b2c3d4e5",
+      "permissions": ["backup/"],
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "lastUsedAt": "2026-01-02T03:04:05.000Z",
+      "expiresAt": null,
+      "createdBy": "admin"
+    }
+  ]
+}
+```
+
+### `POST /api/keys`
+
+创建密钥，需要**主账号**且权限含 `*`。请求体：
+
+```json
+{ "name": "备份脚本", "permissions": "backup/,public/", "expiresInDays": 90 }
+```
+
+- `name`：备注名，必填。
+- `permissions`：字符串（逗号分隔）或数组，默认 `*`。
+- `expiresInDays`：可选，正整数，不填表示永不过期。
+
+响应 `201`：
+
+```json
+{
+  "id": "a1b2c3d4e5",
+  "key": "fd_a1b2c3d4e5_0123456789abcdef0123456789abcdef",
+  "name": "备份脚本",
+  "permissions": ["backup/", "public/"],
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "expiresAt": null
+}
+```
+
+**`key` 字段只在此响应中出现一次，请立即保存。**
+
+### `DELETE /api/keys/{id}`
+
+吊销密钥。需要**主账号**且权限含 `*`。成功返回 `204`，不存在返回 `404`。
+
+## 9. `POST /api/upload/{path}`
+
+给脚本用的上传接口，支持 API Key 认证。
+
+- `{path}` 以 `/` 结尾（或以 `/api/upload/` 空路径调用）时，使用上传文件名作为对象名，
+  落到该目录下；否则把 `{path}` 当作完整对象键。
+- 请求体二选一：
+  - `multipart/form-data`，文件字段名 `file`（也接受任意单文件字段）；
+  - 原始字节流，此时对象名必须由路径给出。
+- 需要该路径的写权限（按账号或密钥的前缀白名单判定）。
+- 父目录不存在时会自动创建。
+- 响应 `201`：
+
+```json
+{
+  "key": "backup/2026-01-01.zip",
+  "size": 1048576,
+  "uploaded": "2026-01-01T00:00:00.000Z",
+  "url": "/raw/backup/2026-01-01.zip"
+}
+```
+
+示例：
+
+```bash
+curl -X POST https://<域名>/api/upload/backup/ \
+  -H "X-Api-Key: fd_xxxxxxxxxx_yyyyyyyy" \
+  -F "file=@backup.zip"
+
+curl -X PUT https://<域名>/webdav/backup/raw.bin \
+  -H "X-Api-Key: fd_xxxxxxxxxx_yyyyyyyy" \
+  --data-binary @raw.bin
+```

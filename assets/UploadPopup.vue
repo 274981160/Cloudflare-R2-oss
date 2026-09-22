@@ -1,9 +1,14 @@
 <script setup>
+import { supportsDirectoryUpload } from "/assets/main.mjs";
+
 defineProps({
   modelValue: Boolean,
 });
 
 const emit = defineEmits(["update:modelValue", "upload", "createFolder"]);
+
+/** 移动端内核没有「选择整个文件夹」入口，这里按浏览器能力决定是否渲染该按钮 */
+const canPickDirectory = supportsDirectoryUpload();
 </script>
 <template>
   <div class="popup">
@@ -74,6 +79,26 @@ const emit = defineEmits(["update:modelValue", "upload", "createFolder"]);
             </svg>
             <span>新建文件夹</span>
           </button>
+          <button v-if="canPickDirectory" type="button" aria-label="上传文件夹" onclick="this.lastElementChild.click()">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512">
+              <!--! Font Awesome Pro 6.2.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license (Commercial License) Copyright 2022 Fonticons, Inc. -->
+              <path
+                d="M88.7 223.8L0 375.8V96C0 60.7 28.7 32 64 32H181.5c17 0 33.3 6.7 45.3 18.7l26.5 26.5c12 12 28.3 18.7 45.3 18.7H416c35.3 0 64 28.7 64 64v32H144c-22.8 0-43.8 12.1-55.3 31.8zm27.6 16.1C122.1 230 132.6 224 144 224H544c11.5 0 22 6.1 27.7 16.1s5.7 22.2-.1 32.1l-112 192C453.9 464 443.4 470 432 470H32c-11.5 0-22-6.1-27.7-16.1s-5.7-22.2 .1-32.1l112-192z"
+              />
+            </svg>
+            <span>上传文件夹</span>
+            <input
+              type="file"
+              webkitdirectory
+              multiple
+              hidden
+              @change="emit('upload', $event.target)"
+            />
+          </button>
+          <p v-else class="popup-hint">
+            手机浏览器不支持选择整个文件夹：请用「文件」多选上传，或安装 WebDAV 客户端（如 Cx
+            文件管理器）挂载本网盘后上传文件夹。
+          </p>
         </div>
       </div>
     </Transition>
@@ -119,5 +144,18 @@ const emit = defineEmits(["update:modelValue", "upload", "createFolder"]);
   width: 32px;
   height: 32px;
   margin: 8px;
+}
+
+/* 移动端：说明文案占满整行，提示而非报错 */
+.popup .popup-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background-color: #fff8e6;
+  color: #8a6d3b;
+  font-size: 12px;
+  line-height: 1.6;
+  text-align: left;
 }
 </style>

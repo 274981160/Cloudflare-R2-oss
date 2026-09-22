@@ -62,10 +62,20 @@ export function extractKey(request: Request, routePrefix: string): string | null
 }
 
 /**
- * 解析出目标存储桶与对象键。
- *
- * 桶的选择沿用旧版规则：取主机名第一段作为绑定名，找不到则回落到 `BUCKET`，
+ * 选择目标存储桶：取主机名第一段作为绑定名，找不到则回落到 `BUCKET`，
  * 因此可以用 `a.example.com` / `b.example.com` 指向不同桶。
+ */
+export function resolveBucket(env: Env, url: URL): R2Bucket | null {
+  const driveId = url.hostname.replace(/\..*/, "");
+  const candidate = driveId ? env[driveId] : undefined;
+
+  if (isBucketLike(candidate)) return candidate;
+  if (isBucketLike(env.BUCKET)) return env.BUCKET;
+  return null;
+}
+
+/**
+ * 解析出目标存储桶与对象键。
  */
 export function parseBucketPath(
   context: any,
@@ -76,15 +86,7 @@ export function parseBucketPath(
   if (path === null) return null;
 
   const url = new URL(request.url);
-  const driveId = url.hostname.replace(/\..*/, "");
-  const candidate = driveId ? env[driveId] : undefined;
-
-  const bucket = isBucketLike(candidate)
-    ? candidate
-    : isBucketLike(env.BUCKET)
-    ? env.BUCKET
-    : null;
-
+  const bucket = resolveBucket(env, url);
   if (!bucket) return null;
   return { bucket, path, url };
 }

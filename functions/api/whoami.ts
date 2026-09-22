@@ -11,12 +11,13 @@ import {
   canWriteAnywhere,
   type Subject,
 } from "../../utils/auth";
-import { jsonResponse } from "../../utils/bucket";
+import { jsonResponse, resolveBucket } from "../../utils/bucket";
 
 /** 登录状态与能力探测，网页端启动时调用。永远返回 200。 */
 export const onRequestGet: PagesFunction<Env> = async function (context) {
   const { request, env } = context;
-  const auth = authenticate(request, env);
+  const bucket = resolveBucket(env, new URL(request.url));
+  const auth = await authenticate(request, env, bucket);
   const subject: Subject = {
     account: auth.account,
     anonymous: auth.anonymous,
@@ -27,6 +28,13 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     authenticated: Boolean(auth.account),
     username: auth.account ? auth.account.username : null,
     permissions: auth.account ? auth.account.permissions : [],
+    /** 本次请求是否用 API Key 认证（密钥本身无权管理密钥）。 */
+    viaApiKey: Boolean(auth.account && auth.account.source === "apikey"),
+    canManageKeys: Boolean(
+      auth.account &&
+        auth.account.source !== "apikey" &&
+        auth.account.permissions.includes("*")
+    ),
     publicRead: isPublicRead(env),
     publicThumbnails: isPublicThumbnails(env),
     readOnly: !canWriteAnywhere(subject),

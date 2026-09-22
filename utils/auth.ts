@@ -5,14 +5,25 @@ import {
   isPublicRead,
   isPublicThumbnails,
 } from "./config";
+import { ApiKeyRecord, looksLikeApiKey, verifyApiKey } from "./apikey";
+import {
+  normalizePath,
+  parsePermissions,
+  permissionAllows,
+} from "./permissions";
+
+// 路径与权限工具下沉到 permissions.ts，这里继续对外导出以保持调用方不变
+export { normalizePath, parsePermissions, permissionAllows };
 
 export interface Account {
   username: string;
   password: string;
   /** 允许访问的路径前缀；["*"] 表示全部。 */
   permissions: string[];
-  /** 配置来源，仅用于诊断。 */
+  /** 配置来源，仅用于诊断：WEBDAV_USERNAME / WEBDAV_USERS / env-name / apikey */
   source: string;
+  /** 通过 API Key 认证时的密钥 id。 */
+  apiKeyId?: string;
 }
 
 /** 一次请求的授权主体。 */
@@ -42,11 +53,6 @@ const RESERVED_ENV_KEYS = new Set([
 
 const RESERVED_ENV_PREFIXES = ["WEBDAV_", "CF_", "NODE_", "npm_", "__"];
 
-/** 去掉首尾斜杠，得到用于比较的规范路径。 */
-export function normalizePath(path: string | null | undefined): string {
-  return (path || "").replace(/^\/+/, "").replace(/\/+$/, "");
-}
-
 function decodeBase64Utf8(input: string): string {
   const normalized = input.replace(/-/g, "+").replace(/_/g, "/");
   const padded =
@@ -66,17 +72,6 @@ export function timingSafeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < left.length; i++) diff |= left[i] ^ right[i];
   return diff === 0;
-}
-
-/** 解析逗号分隔的权限列表；空项会被丢弃，`*` 归一为全部。 */
-export function parsePermissions(raw: string | undefined | null): string[] {
-  if (typeof raw !== "string") return [];
-  const parts = raw
-    .split(",")
-    .map((part) => normalizePath(part.trim()))
-    .filter((part) => part.length > 0);
-  if (parts.includes("*")) return ["*"];
-  return Array.from(new Set(parts));
 }
 
 /**
@@ -146,7 +141,57 @@ export function parseAccounts(env: Env): Account[] {
   return accounts;
 }
 
-export function authenticate(request: Request, env: Env): AuthResult {
+/** 从请求里取出 API Key（X-Api-Key 头或 Bearer 令牌）。 */
+export function extractApiKey(request: Request): string | null {
+  const header = request.headers.get("X-Api-Key");
+  if (header && header.trim()) return header.trim();
+
+  const authorization = request.headers.get("Authorization");
+  if (!authorization) return null;
+  const bearer = /^Bearer\s+(.+)$/i.exec(authorization.trim());
+  return bearer ? bearer[1].trim() : null;
+}
+
+function accountFromApiKey(record: ApiKeyRecord): Account {
+  return {
+    username: `key:${record.name || record.id}`,
+    password: "",
+    permissions: record.permissions,
+    source: "apikey",
+    apiKeyId: record.id,
+  };
+}
+
+async function authenticateApiKey(
+  bucket: R2Bucket,
+  key: string
+): Promise<AuthResult> {
+  const record = await verifyApiKey(bucket, key);
+  if (!record) return { account: null, anonymous: false, invalid: true };
+  return {
+    account: accountFromApiKey(record),
+    anonymous: false,
+    invalid: false,
+  };
+}
+
+/**
+ * 认证。支持三种凭据：
+ * 1. 环境变量里配置的账号（HTTP Basic）
+ * 2. API Key：`X-Api-Key: fd_...` 或 `Authorization: Bearer fd_...`
+ * 3. 只支持 Basic 的 WebDAV 客户端：用户名随便填，密码位填 API Key
+ */
+export async function authenticate(
+  request: Request,
+  env: Env,
+  bucket?: R2Bucket | null
+): Promise<AuthResult> {
+  const apiKey = extractApiKey(request);
+  if (apiKey) {
+    if (!bucket) return { account: null, anonymous: false, invalid: true };
+    return authenticateApiKey(bucket, apiKey);
+  }
+
   const header = request.headers.get("Authorization");
   if (!header || !header.trim()) {
     return { account: null, anonymous: true, invalid: false };
@@ -176,20 +221,11 @@ export function authenticate(request: Request, env: Env): AuthResult {
     }
   }
 
-  return { account: null, anonymous: false, invalid: true };
-}
+  if (bucket && looksLikeApiKey(password)) {
+    return authenticateApiKey(bucket, password);
+  }
 
-/** 单个权限项能否覆盖目标路径。 */
-export function permissionAllows(
-  permission: string,
-  path: string | null | undefined
-): boolean {
-  const perm = normalizePath(permission);
-  if (perm === "*") return true;
-  if (!perm) return false;
-  const target = normalizePath(path);
-  if (!target) return false;
-  return target === perm || target.startsWith(perm + "/");
+  return { account: null, anonymous: false, invalid: true };
 }
 
 function permissionsOf(subject: Subject): string[] {

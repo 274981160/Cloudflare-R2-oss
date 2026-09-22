@@ -89,24 +89,25 @@ function lockDiscoveryXml(
   locks: Array<{ token: string; owner: string; depth: string; timeoutSeconds: number; path: string }>,
   request: Request
 ): string {
-  if (!locks.length) return "<D:lockdiscovery />";
+  if (!locks.length) return "";
   const origin = new URL(request.url).origin;
   const body = locks
     .map(
-      (lock) => `<D:activelock>
-          <D:locktype><D:write /></D:locktype>
-          <D:lockscope><D:exclusive /></D:lockscope>
-          <D:depth>${escapeXml(lock.depth)}</D:depth>
-          ${lock.owner ? `<D:owner>${lock.owner}</D:owner>` : "<D:owner />"}
-          <D:timeout>Second-${Math.max(1, Math.floor(lock.timeoutSeconds))}</D:timeout>
-          <D:locktoken><D:href>${escapeXml(lock.token)}</D:href></D:locktoken>
-          <D:lockroot><D:href>${escapeXml(
+      (lock) => `<activelock>
+          <locktype><write /></locktype>
+          <lockscope><exclusive /></lockscope>
+          <depth>${escapeXml(lock.depth)}</depth>
+          ${lock.owner ? `<owner>${lock.owner}</owner>` : "<owner />"}
+          <timeout>Second-${Math.max(1, Math.floor(lock.timeoutSeconds))}</timeout>
+          <locktoken><href>${escapeXml(lock.token)}</href></locktoken>
+          <lockroot><href>${escapeXml(
             origin + encodeHref(lock.path, true)
-          )}</D:href></D:lockroot>
-        </D:activelock>`
+          )}</href></lockroot>
+        </activelock>`
     )
     .join("\n");
-  return `<D:lockdiscovery>\n${body}\n</D:lockdiscovery>`;
+  // 只返回 <lockdiscovery> 的内部内容，外层标签由 renderProp 统一包出
+  return body;
 }
 
 function buildProps(
@@ -138,7 +139,7 @@ function buildProps(
     getetag: entry.httpEtag || entry.etag,
     getlastmodified: (entry.uploaded || new Date()).toUTCString(),
     resourcetype: null,
-    "fd:thumbnail": entry.thumbnail,
+    "thumbnail": entry.thumbnail,
   };
 
   const props: PropfindProp[] = [];
@@ -152,7 +153,7 @@ function buildProps(
       case "resourcetype":
         props.push({
           name,
-          value: entry.isDirectory ? "<D:collection />" : "",
+          value: entry.isDirectory ? "<collection />" : "",
           namespace: "DAV:",
           raw: true,
         });
@@ -161,7 +162,7 @@ function buildProps(
         props.push({
           name,
           value: includeLockProps
-            ? '<D:lockentry><D:lockscope><D:exclusive /></D:lockscope><D:locktype><D:write /></D:locktype></D:lockentry>'
+            ? '<lockentry><lockscope><exclusive /></lockscope><locktype><write /></locktype></lockentry>'
             : "",
           namespace: "DAV:",
           raw: true,
@@ -172,7 +173,7 @@ function buildProps(
           name,
           value: includeLockProps
             ? lockDiscoveryXml(options.locks, options.request)
-            : "<D:lockdiscovery />",
+            : "",
           namespace: "DAV:",
           raw: true,
         });
@@ -190,7 +191,8 @@ function buildProps(
       default: {
         const value = values[name];
         if (value === null || value === undefined) {
-          if (name === "fd:thumbnail") break;
+          // 空属性（如无缩略图）：输出自闭合元素即可，不要输出带前缀的 fd: 标签
+          if (name.startsWith("fd:")) break;
           props.push({ name, value: "", namespace: "DAV:" });
         } else {
           props.push({
@@ -349,7 +351,7 @@ export async function handleRequestPropfind(context: DavContext): Promise<Respon
 
   if (truncated) {
     return new Response(
-      '<?xml version="1.0" encoding="utf-8"?>\n<D:error xmlns:D="DAV:"><D:propfind-finite-depth /></D:error>',
+      '<?xml version="1.0" encoding="utf-8"?>\n<error xmlns="DAV:"><propfind-finite-depth /></error>',
       {
         status: 507,
         headers: { "Content-Type": 'application/xml; charset="utf-8"' },

@@ -163,9 +163,23 @@ curl -s "$BASE$SIGFOLDER" -o /tmp/sign-share.zip
 check "目录签名打包是合法 zip" "PK" "$(head -c 2 /tmp/sign-share.zip)"
 check "签名不能读到别的对象 401" 401 "$(code "$BASE/raw/_sec/sub/b.txt?exp=9999999999&sig=deadbeef")"
 
+section "9.5 PROPFIND 响应（Android 客户端兼容）"
+PFROOT="$(curl -s -u "$ADMIN" -X PROPFIND -H 'Depth: 1' "$BASE/webdav/")"
+atleast "默认命名空间 multistatus" 1 "$(printf '%s' "$PFROOT" | grep -c '<multistatus xmlns="DAV:"')"
+check "无 D: 前缀" 0 "$(printf '%s' "$PFROOT" | grep -c '<D:')"
+check "无 fd: 前缀" 0 "$(printf '%s' "$PFROOT" | grep -c '<fd:')"
+atleast "按标签名能找到 response" 1 "$(printf '%s' "$PFROOT" | grep -c '<response>')"
+atleast "按标签名能找到 href" 1 "$(printf '%s' "$PFROOT" | grep -c '<href>')"
+check "无嵌套 lockdiscovery" 0 "$(printf '%s' "$PFROOT" | grep -c '<lockdiscovery>')"
+atleast "集合标记 resourcetype" 1 "$(printf '%s' "$PFROOT" | grep -c '<collection />')"
+# 文件夹 href 以 / 结尾（标准客户端要求）
+FHREF="$(printf '%s' "$PFROOT" | grep -o '<href>[^<]*/</href>' | head -1)"
+atleast "目录 href 以 / 结尾" 1 "$(printf '%s' "$FHREF" | grep -c '/</href>')"
+
 section "10. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"
 
 printf '\n\033[1m结果: %d 通过, %d 失败\033[0m\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
+# 已在后面追加：见下方分隔（实际追加在清理段之前，直接改文件）

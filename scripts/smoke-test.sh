@@ -84,9 +84,9 @@ check "Accept-Ranges 头" 1 "$(hdr "$W/docs/hello.txt" | grep -ci '^accept-range
 
 section "5. PROPFIND 细节"
 PF="$(curl -s -X PROPFIND -H 'Depth: 1' "$W/docs/")"
-case "$PF" in *"<D:multistatus"*) ok "返回 XML multistatus";; *) bad "返回 XML" "<D:multistatus" "$(printf '%s' "$PF" | head -c 60)";; esac
+case "$PF" in *"<multistatus"*) ok "返回 XML multistatus";; *) bad "返回 XML" "<multistatus" "$(printf '%s' "$PF" | head -c 60)";; esac
 atleast "列出子文件" 1 "$(printf '%s' "$PF" | grep -c 'hello.txt')"
-atleast "目录标记 resourcetype" 1 "$(printf '%s' "$PF" | grep -c '<D:collection />')"
+atleast "目录标记 resourcetype" 1 "$(printf '%s' "$PF" | grep -c '<collection />')"
 atleast "宣告 supportedlock" 1 "$(printf '%s' "$PF" | grep -c 'supportedlock')"
 atleast "含 getcontentlength" 1 "$(printf '%s' "$PF" | grep -c 'getcontentlength')"
 atleast "含 getetag" 1 "$(printf '%s' "$PF" | grep -c 'getetag')"
@@ -152,7 +152,7 @@ atleast "PROPPATCH 回显属性名" 1 "$(curl -s -u "$ADMIN" -X PROPPATCH --data
 
 section "9. 旧版目录标记兼容"
 check "写入旧标记 legacy/_\$folder\$ 201" 201 "$(acode -X PUT --data '' "$W/legacy/_\$folder\$")"
-check "旧标记目录在 PROPFIND 中为集合" 1 "$(curl -s -X PROPFIND -H 'Depth: 1' "$W/" | grep -c "legacy/</D:href>")"
+check "旧标记目录在 PROPFIND 中为集合" 1 "$(curl -s -X PROPFIND -H 'Depth: 1' "$W/" | grep -c "legacy/</href>")"
 check "api/list 把旧标记当文件夹" 1 "$(curl -s "$L/" | grep -c '"name":"legacy"')"
 check "旧标记目录内可写文件" 201 "$(acode -X PUT --data 'in-legacy' "$W/legacy/inside.txt")"
 check "读取旧标记目录内文件" "in-legacy" "$(curl -s "$W/legacy/inside.txt")"
@@ -187,7 +187,7 @@ atleast "XML 合法可解析（首行声明）" 1 "$(curl -s -X PROPFIND -H 'Dep
 check "带 & 文件可删除 204" 204 "$(acode -X DELETE "$W/docs/a%20b%20%26%20c.txt")"
 
 section "12. 内部保留目录保护"
-check "根目录 PROPFIND 不含内部目录条目" 0 "$(curl -s -X PROPFIND -H 'Depth: 1' "$BASE/webdav/" | grep -cF '<D:href>/webdav/_$flaredrive$')"
+check "根目录 PROPFIND 不含内部目录条目" 0 "$(curl -s -X PROPFIND -H 'Depth: 1' "$BASE/webdav/" | grep -cF '<href>/webdav/_$flaredrive$')"
 check "写入内部目录被拒 403" 403 "$(acode -X PUT --data 'x' "$BASE/webdav/_%24flaredrive%24/evil.txt")"
 check "删除内部目录被拒 403" 403 "$(acode -X DELETE "$BASE/webdav/_%24flaredrive%24")"
 check "缩略图可写 201" 201 "$(acode -X PUT --data 'png' -H 'Content-Type: image/png' "$BASE/webdav/_%24flaredrive%24/thumbnails/abc123.png")"

@@ -18,26 +18,26 @@ import {
 import { DavContext, readBodyText } from "./context";
 
 function activeLockXml(lock: LockInfo, origin: string): string {
-  return `<D:activelock>
-        <D:locktype><D:write /></D:locktype>
-        <D:lockscope><D:exclusive /></D:lockscope>
-        <D:depth>${escapeXml(lock.depth)}</D:depth>
-        ${lock.owner ? `<D:owner>${lock.owner}</D:owner>` : "<D:owner />"}
-        <D:timeout>Second-${lock.timeoutSeconds}</D:timeout>
-        <D:locktoken><D:href>${escapeXml(lock.token)}</D:href></D:locktoken>
-        <D:lockroot><D:href>${escapeXml(
+  return `<activelock>
+        <locktype><write /></locktype>
+        <lockscope><exclusive /></lockscope>
+        <depth>${escapeXml(lock.depth)}</depth>
+        ${lock.owner ? `<owner>${lock.owner}</owner>` : "<owner />"}
+        <timeout>Second-${lock.timeoutSeconds}</timeout>
+        <locktoken><href>${escapeXml(lock.token)}</href></locktoken>
+        <lockroot><href>${escapeXml(
           origin + encodeHref(lock.path, true)
-        )}</D:href></D:lockroot>
-      </D:activelock>`;
+        )}</href></lockroot>
+      </activelock>`;
 }
 
 function lockResponseBody(lock: LockInfo, origin: string): string {
   return `<?xml version="1.0" encoding="utf-8"?>
-<D:prop xmlns:D="DAV:">
-  <D:lockdiscovery>
+<prop xmlns="DAV:">
+  <lockdiscovery>
       ${activeLockXml(lock, origin)}
-  </D:lockdiscovery>
-</D:prop>`;
+  </lockdiscovery>
+</prop>`;
 }
 
 function lockResponse(lock: LockInfo, origin: string): Response {

@@ -74,7 +74,8 @@ export interface PropfindItem {
 }
 
 function renderProp(prop: PropfindProp): string {
-  const tag = prop.namespace === "DAV:" ? `D:${prop.name}` : prop.name;
+  // 默认命名空间：所有 DAV: 属性不再带 D: 前缀（Android 客户端按标签名解析）
+  const tag = prop.name;
   if (prop.value === null) return `<${tag} />`;
   const value = prop.raw ? prop.value : escapeXml(prop.value);
   return `<${tag}>${value}</${tag}>`;
@@ -88,24 +89,24 @@ export function buildMultistatus(items: PropfindItem[]): string {
         ? "HTTP/1.1 200 OK"
         : "HTTP/1.1 200 OK";
       return [
-        "  <D:response>",
-        `    <D:href>${escapeXml(item.href)}</D:href>`,
-        "    <D:propstat>",
-        "      <D:prop>",
+        "  <response>",
+        `    <href>${escapeXml(item.href)}</href>`,
+        "    <propstat>",
+        "      <prop>",
         ...item.props.map((prop) => `        ${renderProp(prop)}`),
-        "      </D:prop>",
-        `      <D:status>${status}</D:status>`,
-        "    </D:propstat>",
-        "  </D:response>",
+        "      </prop>",
+        `      <status>${status}</status>`,
+        "    </propstat>",
+        "  </response>",
       ].join("\n");
     })
     .join("\n");
 
   return [
     '<?xml version="1.0" encoding="utf-8"?>',
-    '<D:multistatus xmlns:D="DAV:" xmlns:fd="flaredrive">',
+    '<multistatus xmlns="DAV:" xmlns:fd="flaredrive">',
     responses,
-    "</D:multistatus>",
+    "</multistatus>",
   ].join("\n");
 }
 
@@ -119,28 +120,28 @@ export function buildPropstatResponse(href: string, groups: PropstatGroup[]): st
   const blocks = groups
     .map((group) =>
       [
-        "    <D:propstat>",
-        "      <D:prop>",
+        "    <propstat>",
+        "      <prop>",
         ...group.props.map((prop) =>
           prop.value === null
-            ? `        <D:${prop.name} />`
-            : `        <D:${prop.name}>${escapeXml(prop.value)}</D:${prop.name}>`
+            ? `        <${prop.name} />`
+            : `        <${prop.name}>${escapeXml(prop.value)}</${prop.name}>`
         ),
-        "      </D:prop>",
-        `      <D:status>${group.status}</D:status>`,
-        "    </D:propstat>",
+        "      </prop>",
+        `      <status>${group.status}</status>`,
+        "    </propstat>",
       ].join("\n")
     )
     .join("\n");
 
   return [
     '<?xml version="1.0" encoding="utf-8"?>',
-    '<D:multistatus xmlns:D="DAV:" xmlns:fd="flaredrive">',
-    "  <D:response>",
-    `    <D:href>${escapeXml(href)}</D:href>`,
+    '<multistatus xmlns="DAV:" xmlns:fd="flaredrive">',
+    "  <response>",
+    `    <href>${escapeXml(href)}</href>`,
     blocks,
-    "  </D:response>",
-    "</D:multistatus>",
+    "  </response>",
+    "</multistatus>",
   ].join("\n");
 }
 

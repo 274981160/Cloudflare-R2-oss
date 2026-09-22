@@ -95,11 +95,11 @@ function handleOptions(env: Env): Response {
 
 function lockedResponse(detail: { owner?: string; path?: string }): Response {
   const body = `<?xml version="1.0" encoding="utf-8"?>
-<D:error xmlns:D="DAV:">
-  <D:lock-token-submitted>
-    <D:href>${detail.path ? encodeURI(detail.path) : ""}</D:href>
-  </D:lock-token-submitted>
-</D:error>`;
+<error xmlns="DAV:">
+  <lock-token-submitted>
+    <href>${detail.path ? encodeURI(detail.path) : ""}</href>
+  </lock-token-submitted>
+</error>`;
   return new Response(body, {
     status: 423,
     headers: { "Content-Type": 'application/xml; charset="utf-8"' },

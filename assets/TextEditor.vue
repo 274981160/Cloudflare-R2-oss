@@ -421,6 +421,12 @@ export default {  props: {
     versionsError: "",
     /** 正在处理（载入 / 恢复 / 删除）的版本 id */
     versionBusy: "",
+    /**
+     * 高亮层使用的文本副本（防抖更新）。
+     * 语法着色要对全文分词并整段重渲染 v-html，如果跟着每个按键走，
+     * 大文件下会明显掉帧；这里让打字保持流畅，着色稍后跟上。
+     */
+    highlightText: "",
     /** 编辑器内撤销 / 重做（Ctrl+Z / Ctrl+Y），按「一段连续输入」合并成一步 */
     undoStack: [],
     redoStack: [],
@@ -500,7 +506,7 @@ export default {  props: {
       if (!this.colorized) return [];
       const id = this.language.id;
       if (id === "plaintext") return [];
-      return tokenize(this.content, this.language);
+      return tokenize(this.highlightText, this.language);
     },
 
     canFormat() {
@@ -521,7 +527,9 @@ export default {  props: {
     },
 
     matches() {
-      return findMatches(this.content, this.search, this.caseSensitive);
+      // 与高亮层用同一份文本（highlightText），避免打字防抖窗口内
+      // 搜索高亮与实际渲染文本错位
+      return findMatches(this.highlightText, this.search, this.caseSensitive);
     },
 
     matchLabel() {
@@ -533,7 +541,12 @@ export default {  props: {
 
     /** 高亮层：语法着色 + 搜索匹配，与 textarea 内容逐字符对齐 */
     highlightHtml() {
-      return buildHighlightHtml(this.content, this.tokens, this.matches, this.currentIndex);
+      return buildHighlightHtml(
+        this.highlightText,
+        this.tokens,
+        this.matches,
+        this.currentIndex
+      );
     },
 
     /** 保存时使用的 Content-Type */
@@ -558,9 +571,12 @@ export default {  props: {
     },
 
     content() {
-      this.$nextTick(() => this.syncLayers());
+      // 输入时只做滚动同步（轻量），measureGutter（读 offsetWidth 触发 reflow）
+      // 交给 resize / 打开编辑器时做，避免每个按键都强制重排导致卡顿
+      this.$nextTick(() => this.syncScroll());
       this.scheduleJsonCheck();
       this.scheduleUndoSnapshot();
+      this.scheduleHighlight();
     },
 
     matches(list) {
@@ -587,6 +603,8 @@ export default {  props: {
     document.removeEventListener("keydown", this._onKeydown, true);
     window.removeEventListener("resize", this._onResize);
     if (this._jsonTimer) clearTimeout(this._jsonTimer);
+    if (this._hlTimer) clearTimeout(this._hlTimer);
+    if (this._undoTimer) clearTimeout(this._undoTimer);
   },
 
   methods: {
@@ -634,21 +652,31 @@ export default {  props: {
       this.setStatus("已重做", false);
     },
 
-    /** 应用历史内容，并把光标放到末尾，方便继续输入 */
+    /**
+     * 应用历史内容（撤销/重做/载入版本）。
+     * 光标尽量停在原位置：取「撤销前光标位置」与「新文本长度」的较小值，
+     * 不再强制跳到文件末尾，避免用户每次撤销都要滑回去。
+     */
     applyHistory(text) {
+      const input = this.$refs.input;
+      // 记录撤销前的光标与滚动位置
+      const prevStart = input && typeof input.selectionStart === "number" ? input.selectionStart : text.length;
+      const prevScrollTop = input ? input.scrollTop : 0;
+
       this.content = text;
       this._lastPushed = text;
       this.$nextTick(() => {
-        const input = this.$refs.input;
-        if (input && typeof input.setSelectionRange === "function") {
-          const end = text.length;
-          try {
-            input.setSelectionRange(end, end);
-            input.scrollTop = input.scrollHeight;
-            this.syncScroll();
-          } catch (error) {
-            /* 忽略 */
-          }
+        const el = this.$refs.input;
+        if (!el) return;
+        const pos = Math.min(prevStart, text.length);
+        try {
+          el.focus({ preventScroll: true });
+          el.setSelectionRange(pos, pos);
+          // 尽量保持原来的滚动位置；若光标已不在可视区，浏览器会自动微调
+          el.scrollTop = Math.min(prevScrollTop, el.scrollHeight);
+          this.syncScroll();
+        } catch (error) {
+          /* 忽略 */
         }
       });
     },
@@ -675,13 +703,24 @@ export default {  props: {
       if (!this.itemKey) return;
       this.versionsLoading = true;
       this.versionsError = "";
+      // 并发保护：快速反复点击时只认最后一次
+      const token = (this._versionToken = (this._versionToken || 0) + 1);
       try {
-        this.versions = await listVersions(this.itemKey);
+        // 15 秒超时，避免网络挂起时永远停在「加载中」
+        const result = await Promise.race([
+          listVersions(this.itemKey),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("请求超时，请检查网络后重试")), 15000)
+          ),
+        ]);
+        if (token !== this._versionToken) return; // 已被更新的请求取代
+        this.versions = result;
       } catch (error) {
+        if (token !== this._versionToken) return;
         this.versions = [];
         this.versionsError = `读取历史版本失败：${errorMessage(error)}`;
       } finally {
-        this.versionsLoading = false;
+        if (token === this._versionToken) this.versionsLoading = false;
       }
     },
 
@@ -757,6 +796,11 @@ export default {  props: {
       this.searchFocused = false;
       this.jsonValid = false;
       this.jsonError = "";
+      if (this._hlTimer) {
+        clearTimeout(this._hlTimer);
+        this._hlTimer = 0;
+      }
+      this.highlightText = "";
       this.resetHistory("");
     },
 
@@ -802,6 +846,7 @@ export default {  props: {
         this.jsonValid = false;
         this.jsonError = "";
         this.$nextTick(() => {
+          this.highlightText = this.content;
           this.syncLayers();
           this.validateJson();
         });
@@ -841,6 +886,15 @@ export default {  props: {
     /* ---------------- JSON 校验与格式化 ---------------- */
 
     /** 编辑时防抖 300ms 校验 */
+    /** 防抖更新高亮层：停止输入 150ms 后再重新着色，打字过程不卡 */
+    scheduleHighlight() {
+      if (this._hlTimer) clearTimeout(this._hlTimer);
+      this._hlTimer = setTimeout(() => {
+        this._hlTimer = 0;
+        this.highlightText = this.content;
+      }, 150);
+    },
+
     scheduleJsonCheck() {
       if (this._jsonTimer) clearTimeout(this._jsonTimer);
       if (!this.isJson) {

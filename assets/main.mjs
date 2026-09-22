@@ -663,6 +663,59 @@ export async function fetchFileBlob(key) {
  * @param {string} key
  * @param {{publicRead?: boolean}} [options] 公开读时直接用 `<a href="/raw/...">`
  */
+/**
+ * 带进度的下载：取回 Blob。
+ * 私有模式下没法用直链（`<a href>` 带不上认证头），只能先把文件取回来再存，
+ * 所以必须有进度回调，否则用户点下载后会长时间「毫无反应」。
+ */
+export function fetchBlobWithProgress(url, options) {
+  const settings = options || {};
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(settings.method || "GET", url, true);
+    xhr.responseType = "blob";
+    const headers = authHeaders(settings.headers);
+    for (const name of Object.keys(headers)) {
+      const value = headers[name];
+      if (value == null) continue;
+      try {
+        xhr.setRequestHeader(name, value);
+      } catch (error) {
+        /* 非法头名忽略 */
+      }
+    }
+    if (typeof settings.onProgress === "function") {
+      xhr.onprogress = (event) => {
+        settings.onProgress({
+          loaded: event.loaded,
+          total: event.lengthComputable ? event.total : 0,
+          lengthComputable: Boolean(event.lengthComputable),
+        });
+      };
+    }
+    xhr.onload = () => {
+      if (xhr.status === 401) {
+        notifyUnauthorized();
+        reject(new ApiError(statusMessage(401), 401, url));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new ApiError(statusMessage(xhr.status), xhr.status, url));
+        return;
+      }
+      resolve(xhr.response);
+    };
+    xhr.onerror = () => reject(new ApiError("网络错误，下载失败", 0, url));
+    xhr.ontimeout = () => reject(new ApiError("下载超时", 0, url));
+    xhr.onabort = () => reject(new ApiError("下载已取消", 0, url));
+    try {
+      xhr.send(null);
+    } catch (error) {
+      reject(new ApiError(`下载失败：${errorMessage(error)}`, 0, url));
+    }
+  });
+}
+
 export async function downloadKey(key, options) {
   const name = basename(key) || "download";
   const publicRead = !!(options && options.publicRead);
@@ -677,7 +730,9 @@ export async function downloadKey(key, options) {
     anchor.remove();
     return null;
   }
-  const blob = await fetchFileBlob(key);
+  // 私有模式：带认证取回（支持进度回调），取完再交给浏览器保存
+  const onProgress = options && options.onProgress;
+  const blob = await fetchBlobWithProgress(rawUrl(key), { onProgress });
   saveBlob(blob, name);
   return blob;
 }

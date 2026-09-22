@@ -814,9 +814,24 @@ export default {
         if (item.type === "folder") {
           this.showNotice(`正在打包「${item.name}」...`, "info");
           await downloadZip(item.key);
+          this.showNotice(`「${item.name}」打包完成`, "success");
           return;
         }
-        await downloadKey(item.key, { publicRead: this.directDownload });
+        // 私有模式下要先带认证把文件取回来，耗时取决于文件大小，
+        // 因此这里立刻给反馈并显示进度，避免看起来「点了没反应」
+        this.showNotice(`正在下载「${item.name}」...`, "info");
+        let lastPercent = -1;
+        await downloadKey(item.key, {
+          publicRead: this.directDownload,
+          onProgress: (event) => {
+            if (!event || !event.lengthComputable || !event.total) return;
+            const percent = Math.floor((event.loaded / event.total) * 100);
+            if (percent === lastPercent) return;
+            lastPercent = percent;
+            this.showNotice(`正在下载「${item.name}」 ${percent}%`, "info");
+          },
+        });
+        this.showNotice(`已下载「${item.name}」`, "success");
       } catch (error) {
         this.showNotice(`下载失败：${errorMessage(error)}`, "error");
       }

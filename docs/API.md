@@ -60,7 +60,10 @@
 }
 ```
 
-- `files[].thumbnail` 为 `null` 时前端用 MIME 图标。
+- `files[].thumbnail` 是**缩略图摘要**（sha1 十六进制）或 `null`。
+  缩略图 URL 为 `/raw/_$flaredrive$/thumbnails/{thumbnail}.png`，**需要认证**，
+  前端要带认证头取回后转成 `blob:` URL 再给 `<img>` 用；不要直接把它塞进 `src`。
+  返回摘要而不是完整 URL，就是为了避免把内部目录路径泄露到无认证的引用里。
 - 目录不存在（既不是目录对象，也没有任何子对象）→ `404`。
 - 无读权限 → `403`；未认证且未开公开读 → `401`。
 
@@ -94,7 +97,10 @@
 ## 5. `GET /raw/{key}`
 
 - 直接返回对象字节，支持 `Range` 与条件请求。
-- 匿名可读的条件：开启公开读，或 key 属于 `_$flaredrive$/thumbnails/`（缩略图默认始终公开，便于 `<img>` 直接引用）。
+- **默认需要认证**：只有开启 `WEBDAV_PUBLIC_READ=1` 时才允许匿名读取，
+  或者把 key 交给分享链接（`/s/{token}`）去公开。缩略图同样默认不公开
+  （`WEBDAV_PUBLIC_THUMBNAILS=1` 才放行 `_$flaredrive$/thumbnails/`）。
+- `_$flaredrive$/` 下的非缩略图内容（锁、密钥、分享记录、历史版本）**任何情况下都不允许匿名读取**。
 - `_$flaredrive$/thumbnails/` 带 `Cache-Control: max-age=31536000`。
 
 ## 6. `/webdav/*` 认证与权限
@@ -227,3 +233,79 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
   -H "X-Api-Key: fd_xxxxxxxxxx_yyyyyyyy" \
   --data-binary @raw.bin
 ```
+
+## 10. 分享链接（唯一允许匿名读取的通道）
+
+**默认全站私有**：`WEBDAV_PUBLIC_READ` 默认 `0`，`WEBDAV_PUBLIC_THUMBNAILS` 默认 `0`。
+也就是说匿名访问 `/raw/{key}`、`/webdav/*`、`/api/list` **一律 401**，直接猜路径也拿不到任何内容。
+只有通过分享链接才能匿名读取，且**只能读到被分享的那一个对象或那一棵子树**。
+
+### `POST /api/shares`
+
+需要认证，且调用者对被分享的 key 必须有读权限。请求体：
+
+```json
+{ "key": "photos/2026", "expiresInDays": 30 }
+```
+
+- `key`：要分享的文件或目录的对象键（目录不带尾斜杠）。
+- `expiresInDays`：可选，正整数；不填表示长期有效。
+- 同一个 key 已有分享且未过期时，直接返回既有的那条（`200`），不会重复创建；
+  新建返回 `201`。
+
+```json
+{
+  "token": "s_9f2c1ab34d5e6f708192",
+  "key": "photos/2026",
+  "type": "folder",
+  "url": "/s/s_9f2c1ab34d5e6f708192",
+  "absoluteUrl": "https://<域名>/s/s_9f2c1ab34d5e6f708192",
+  "createdAt": "2026-01-01T00:00:00.000Z",
+  "createdBy": "admin",
+  "expiresAt": null
+}
+```
+
+`type` 为 `file` 或 `folder`，由服务端探测得出。
+
+### `GET /api/shares`
+
+列出分享。普通账号只能看到自己创建的；权限为 `*` 的账号能看到全部。
+
+```json
+{ "shares": [ { "token": "...", "key": "...", "type": "folder", "createdAt": "...", "createdBy": "admin", "expiresAt": null, "url": "/s/..." } ] }
+```
+
+### `DELETE /api/shares/{token}`
+
+吊销分享，立即失效。需要认证：创建者本人，或权限为 `*` 的账号。成功 `204`，不存在 `404`。
+
+### `GET /s/{token}` 与 `GET /s/{token}/{相对路径}`
+
+**匿名可访问**（这是唯一例外），无需任何认证头。
+
+- token 不存在或已过期 → `404`（不区分「不存在」与「已过期」，避免探测）。
+- 分享的是文件：只能访问 `/s/{token}` 本身，返回内容，支持 `Range` 与条件请求；
+  带 `?download=1` 时强制下载。
+- 分享的是目录：`/s/{token}` 返回一个只读的 HTML 目录页（只列出该目录下的内容）；
+  `/s/{token}/子路径` 可以继续访问该目录下的文件或子目录。
+- **越权防护**：解析后的对象键必须等于被分享的 key，或位于 `被分享key + "/"` 之下，
+  否则一律 `404`。任何 `..` 段、绝对路径、指向 `_$flaredrive$/` 的路径都会被拒绝。
+- `/s/{token}?zip=1`：把被分享的目录打包成 zip 下载。
+
+## 11. 编辑历史与回退
+
+每次通过网页编辑器保存时，前端会在 `PUT /webdav/{key}` 上带 `fd-snapshot: 1` 请求头，
+服务端在覆盖前把**旧内容**存入内部目录 `_$flaredrive$/versions/{sha1(key)}/`，
+因此改错了可以回退。服务端每个 key 只保留最近 `WEBDAV_VERSION_LIMIT`（默认 10）个版本，
+且默认只对 `fd-snapshot: 1` 的写入做快照（`WEBDAV_VERSION_ALL_PUTS=1` 可放开为所有覆盖写），
+超过 `WEBDAV_VERSION_MAX_SIZE`（默认 10485760 字节）的对象不做快照。
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/versions/list/{key}` | 列出该 key 的历史版本，按时间倒序：`{versions:[{id,size,uploaded,savedBy,uploadedAt}]}` |
+| `GET /api/versions/content/{key}/{id}` | 取某个版本的内容（需要该 key 的读权限） |
+| `POST /api/versions/restore/{key}/{id}` | 把某个版本恢复成当前内容（恢复前会先给「当前内容」也存一份快照，所以恢复本身也能再回退） |
+| `DELETE /api/versions/remove/{key}/{id}` | 删除某个历史版本 |
+
+`id` 形如 `1758520000000-ab12cd`，URL 安全。所有接口都需要认证，并按该 key 的读写权限判定。

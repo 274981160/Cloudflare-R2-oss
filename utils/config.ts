@@ -9,17 +9,27 @@ export type Env = Record<string, any>;
 export const INTERNAL_PREFIX = "_$flaredrive$/";
 /** 缩略图存放目录，位于内部保留目录之下。 */
 export const THUMBNAILS_PREFIX = "_$flaredrive$/thumbnails/";
+/** 分享链接记录存放目录。 */
+export const SHARES_PREFIX = "_$flaredrive$/shares/";
+/** 编辑历史（版本快照）存放目录。 */
+export const VERSIONS_PREFIX = "_$flaredrive$/versions/";
 /** 目录对象使用的 Content-Type。 */
 export const DIRECTORY_CONTENT_TYPE = "application/x-directory";
 /** 旧版汉化分支使用的目录标记后缀，形如 `X/_$folder$`。 */
 export const LEGACY_DIR_MARKER = "_$folder$";
 
 export const WEBDAV_ENDPOINT = "/webdav/";
+/** 分享链接的公开入口。 */
+export const SHARE_ENDPOINT = "/s/";
 
 /** 目录打包下载时使用的 zip 条目名不允许出现这些字符。 */
 export const DEFAULT_MAX_PUT_SIZE = 100 * 1000 * 1000; // 100MB
 export const DEFAULT_MAX_DEPTH_ITEMS = 10000;
 export const DEFAULT_MAX_ZIP_SIZE = 1024 * 1024 * 1024; // 1GB
+/** 每个对象保留的历史版本数量。 */
+export const DEFAULT_VERSION_LIMIT = 10;
+/** 超过这个大小的对象不做历史快照，避免把存储吃光。 */
+export const DEFAULT_VERSION_MAX_SIZE = 10 * 1024 * 1024; // 10MB
 
 /** 上报给 WebDAV 客户端的“可用空间”，避免客户端因空间检查而拒绝写入。 */
 export const REPORTED_AVAILABLE_BYTES = 1024 * 1024 * 1024 * 1024; // 1TB
@@ -38,14 +48,36 @@ function readFlag(value: unknown, defaultValue: boolean): boolean {
   return defaultValue;
 }
 
-/** 匿名读取：默认开启（与旧版行为一致）。设为 0 即为私有盘。 */
+/**
+ * 匿名读取总开关。**默认关闭**：默认情况下整个网盘都是私有的，
+ * 直接猜路径访问 /raw/{key}、/webdav/*、/api/list 一律 401。
+ * 只有显式创建分享链接（/s/{token}）才会公开，且只公开被分享的那一项。
+ */
 export function isPublicRead(env: Env): boolean {
-  return readFlag(env.WEBDAV_PUBLIC_READ, true);
+  return readFlag(env.WEBDAV_PUBLIC_READ, false);
 }
 
-/** 缩略图是否始终可匿名引用。关掉后网页端在私有盘模式下缩略图会碎图。 */
+/** 缩略图是否允许匿名引用。默认关闭；关闭时前端用带认证的请求取回再转 blob URL。 */
 export function isPublicThumbnails(env: Env): boolean {
-  return readFlag(env.WEBDAV_PUBLIC_THUMBNAILS, true);
+  return readFlag(env.WEBDAV_PUBLIC_THUMBNAILS, false);
+}
+
+/** 是否启用编辑历史（快照）功能。 */
+export function isVersioningEnabled(env: Env): boolean {
+  return readFlag(env.WEBDAV_VERSIONING, true);
+}
+
+/** 是否对**所有**覆盖写都做快照（默认只对带 fd-snapshot 头的写入做）。 */
+export function isVersionAllPuts(env: Env): boolean {
+  return readFlag(env.WEBDAV_VERSION_ALL_PUTS, false);
+}
+
+export function versionLimit(env: Env): number {
+  return readInt(env.WEBDAV_VERSION_LIMIT, DEFAULT_VERSION_LIMIT);
+}
+
+export function versionMaxSize(env: Env): number {
+  return readInt(env.WEBDAV_VERSION_MAX_SIZE, DEFAULT_VERSION_MAX_SIZE);
 }
 
 /** 是否启用 LOCK/UNLOCK（DAV class 2）与写操作锁校验。 */

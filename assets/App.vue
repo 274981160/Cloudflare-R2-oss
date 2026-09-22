@@ -105,7 +105,7 @@
           @dblclick.stop="openItem(file)"
           @contextmenu.prevent="openContextMenu(file)"
         >
-          <MimeIcon :content-type="file.contentType" :thumbnail="file.thumbnail" />
+          <MimeIcon :content-type="file.contentType" :thumbnail="thumbnailSrc(file)" />
           <div class="file-body">
             <div class="file-name" v-text="file.name"></div>
             <div class="file-attr">
@@ -217,7 +217,7 @@
             </button>
           </li>
           <li>
-            <button @click="runAction(() => copyLink(focusedItem))"><span>复制链接</span></button>
+            <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
           </li>
           <li v-if="canWrite">
             <button @click="runAction(() => renameItem(focusedItem))"><span>重命名</span></button>
@@ -255,7 +255,7 @@
             <button @click="runAction(() => downloadItem(focusedItem))"><span>下载</span></button>
           </li>
           <li>
-            <button @click="runAction(() => copyLink(focusedItem))"><span>复制链接</span></button>
+            <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
           </li>
           <li v-if="canWrite">
             <button @click="runAction(() => renameItem(focusedItem))"><span>重命名</span></button>
@@ -298,6 +298,10 @@
 
     <ApiKeys v-model="showApiKeys"></ApiKeys>
 
+    <Shares v-model="showShares"></Shares>
+
+    <PreviewOverlay v-model="showPreview" :item="previewItem"></PreviewOverlay>
+
     <Transition name="fade">
       <div v-if="notice" class="notice" :class="noticeType" role="status" v-text="notice"></div>
     </Transition>
@@ -313,6 +317,8 @@ import LoginDialog from "./LoginDialog.vue";
 import FolderPicker from "./FolderPicker.vue";
 import TextEditor from "./TextEditor.vue";
 import ApiKeys from "./ApiKeys.vue";
+import Shares from "./Shares.vue";
+import PreviewOverlay from "./PreviewOverlay.vue";
 import {
   ApiError,
   basename,
@@ -320,6 +326,7 @@ import {
   copyKey,
   copyTextToClipboard,
   createFolder as createFolderRequest,
+  createShare,
   dirname,
   downloadKey,
   downloadZip,
@@ -330,13 +337,13 @@ import {
   isTextFile,
   joinKey,
   listDirectory,
+  loadThumbnail,
   moveKey,
   normalizePath,
-  previewKind,
-  rawLink,
   rawUrl,
   removeKey,
   setUnauthorizedHandler,
+  thumbnailDigest,
   uploadWithThumbnail,
   whoami as fetchWhoami,
 } from "/assets/main.mjs";
@@ -354,6 +361,8 @@ export default {
     FolderPicker,
     TextEditor,
     ApiKeys,
+    Shares,
+    PreviewOverlay,
   },
 
   data: () => ({
@@ -383,6 +392,11 @@ export default {
     showFolderPicker: false,
     showTextEditor: false,
     showApiKeys: false,
+    showShares: false,
+    showPreview: false,
+    previewItem: null,
+    /** 缩略图摘要 → blob URL；空串表示取回失败（不再重试，回退 MIME 图标） */
+    thumbnailUrls: {},
     editorItem: null,
     editorForceText: false,
     focusedItem: null,
@@ -514,6 +528,8 @@ export default {
       const items = [{ text: "名称A-Z" }, { text: "大小↑" }, { text: "大小↓" }];
       if (this.canWrite && this.clipboard.length) items.push({ text: "粘贴" });
       if (this.manageKeys) items.push({ text: "API 密钥" });
+      // 分享是普通功能，任何已登录账号都能管理自己创建的分享
+      if (this.profile.authenticated) items.push({ text: "分享管理" });
       items.push({ text: this.profile.authenticated ? "退出登录" : "登录" });
       return items;
     },
@@ -621,6 +637,7 @@ export default {
         this.folders = listing.folders;
         this.dirCanWrite = listing.canWrite && !listing.notFound;
         if (listing.notFound && this.cwd) this.readError = "目录不存在或已被删除";
+        this.ensureThumbnails(listing.files);
       } catch (error) {
         this.files = [];
         this.folders = [];
@@ -686,6 +703,37 @@ export default {
       this.selectedKeys = [];
     },
 
+    /* ---------------- 缩略图（带认证取回，见 main.mjs 的 loadThumbnail） ---------------- */
+
+    /**
+     * 取当前目录里所有文件的缩略图 blob URL。
+     * 缓存由 main.mjs 维护（同一摘要只请求一次，失败也记住），这里只负责把
+     * 结果落到响应式数据上；取不到就留空串，MimeIcon 会自动回退到 MIME 图标。
+     */
+    async ensureThumbnails(files) {
+      const pending = [];
+      for (const file of files || []) {
+        const digest = thumbnailDigest(file && file.thumbnail);
+        if (!digest) continue;
+        if (this.thumbnailUrls[digest] !== undefined) continue;
+        if (pending.indexOf(digest) === -1) pending.push(digest);
+      }
+      if (!pending.length) return;
+      const results = await Promise.all(
+        pending.map((digest) => loadThumbnail(digest).then((url) => ({ digest, url })))
+      );
+      const next = Object.assign({}, this.thumbnailUrls);
+      for (const result of results) next[result.digest] = result.url || "";
+      this.thumbnailUrls = next;
+    },
+
+    /** 列表里 `<img src>` 用的地址；返回空串时 MimeIcon 回退到 MIME 图标 */
+    thumbnailSrc(item) {
+      const digest = thumbnailDigest(item && item.thumbnail);
+      if (!digest) return "";
+      return this.thumbnailUrls[digest] || "";
+    },
+
     /* ---------------- 打开 / 预览 / 下载 ---------------- */
 
     openItem(item) {
@@ -697,13 +745,24 @@ export default {
       this.preview(item);
     },
 
+    /**
+     * 应用内预览：/raw/{key} 默认需要认证，新标签页带不上认证头，
+     * 所以统一交给 PreviewOverlay 用 apiFetch 取回 Blob 后渲染。
+     * 不能在线渲染的类型由 PreviewOverlay 直接触发下载并提示。
+     */
     preview(item) {
       if (!item) return;
-      if (previewKind(item.contentType)) {
-        window.open(rawUrl(item.key), "_blank", "noopener");
+      if (item.type === "folder") {
+        this.navigate(item.key);
         return;
       }
-      this.downloadItem(item);
+      this.previewItem = {
+        key: item.key,
+        name: item.name,
+        size: item.size,
+        contentType: item.contentType,
+      };
+      this.showPreview = true;
     },
 
     /* ---------------- 在线文本编辑 ---------------- */
@@ -783,10 +842,38 @@ export default {
       if (failed) this.showNotice(`有 ${failed} 个项目下载失败`, "error");
     },
 
-    async copyLink(item) {
+    /**
+     * 「复制分享链接」：/raw/{key} 默认私有，直接把 raw 地址发给别人会 401，
+     * 所以先 POST /api/shares 创建（或复用）分享链接，再把绝对地址写进剪贴板。
+     * 目录同样走这条流程，type 以服务端返回的为准。
+     */
+    async copyShareLink(item) {
       if (!item) return;
-      const ok = await copyTextToClipboard(rawLink(item.key));
-      this.showNotice(ok ? "链接已复制到剪贴板" : `复制失败，链接：${rawLink(item.key)}`, ok ? "success" : "error");
+      const key = normalizePath(item.key);
+      if (!key) {
+        this.showNotice("根目录不能单独分享，请对具体的文件或文件夹操作", "error");
+        return;
+      }
+      try {
+        const share = await createShare(key);
+        const link = share.absoluteUrl || share.url;
+        if (!link) {
+          this.showNotice("服务端没有返回分享链接", "error");
+          return;
+        }
+        const ok = await copyTextToClipboard(link);
+        if (!ok) {
+          this.showNotice(`复制失败，链接：${link}`, "error");
+          return;
+        }
+        if (share.type === "folder" || item.type === "folder") {
+          this.showNotice("已分享该文件夹，分享链接已复制（任何拿到链接的人都能访问）", "success");
+        } else {
+          this.showNotice("分享链接已复制（任何拿到链接的人都能访问）", "success");
+        }
+      } catch (error) {
+        this.showNotice(`创建分享失败：${errorMessage(error)}`, "error");
+      }
     },
 
     /* ---------------- 上传 ---------------- */
@@ -1273,6 +1360,9 @@ export default {
           break;
         case "API 密钥":
           if (this.manageKeys) this.showApiKeys = true;
+          break;
+        case "分享管理":
+          this.showShares = true;
           break;
         case "登录":
           this.openLoginDialog();

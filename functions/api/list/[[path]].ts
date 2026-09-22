@@ -64,9 +64,9 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
         uploaded: file.uploaded ? file.uploaded.toISOString() : null,
         etag: file.etag,
         contentType: file.contentType,
-        thumbnail: file.thumbnail
-          ? `/raw/${THUMBNAILS_PREFIX}${file.thumbnail}.png`
-          : null,
+        // 只返回缩略图摘要，不返回完整 URL：
+        // 内部目录路径不该出现在无认证的引用里，前端带认证取回后再转 blob URL
+        thumbnail: file.thumbnail || null,
         writable: canWrite(subject, file.key),
       }));
 

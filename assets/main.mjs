@@ -45,6 +45,8 @@ function state() {
       maxUploadSize: DEFAULT_MAX_UPLOAD_SIZE,
       whoami: null,
       pdfjs: null,
+      /** 缩略图摘要 → Promise<blob URL|null>，跨组件共享（见 loadThumbnail） */
+      thumbnails: null,
     };
   }
   return globalThis.__fdState;
@@ -538,7 +540,8 @@ export function normalizeListing(data, path) {
       uploaded: item.uploaded || null,
       etag: item.etag ? String(item.etag) : "",
       contentType: item.contentType ? String(item.contentType) : "application/octet-stream",
-      thumbnail: item.thumbnail ? String(item.thumbnail) : null,
+      // 后端只返回缩略图摘要（sha1），URL 由 thumbnailUrl 拼、内容由 loadThumbnail 带认证取回
+      thumbnail: thumbnailDigest(item.thumbnail) || null,
       writable: item.writable !== false,
     };
   });
@@ -1992,4 +1995,219 @@ export async function uploadWithThumbnail(key, file, options) {
     }
   }
   return uploadFile(key, file, Object.assign({}, settings, { headers }));
+}
+
+/* ------------------------------------------------------------------ *
+ * 缩略图（默认全私有，必须带认证取回后转 blob URL）
+ * 见 docs/API.md 第 2、5 节：/api/list 只返回摘要，/raw 下的缩略图同样需要认证。
+ * ------------------------------------------------------------------ */
+
+/** 摘要字符集（sha1 十六进制，兼容服务端将来加长摘要） */
+const THUMBNAIL_DIGEST_PATTERN = /^[0-9a-f]{6,64}$/i;
+/** 兼容旧的完整路径写法：/raw/_$flaredrive$/thumbnails/<摘要>.png */
+const THUMBNAIL_PATH_PATTERN = /thumbnails\/([0-9a-f]{6,64})/i;
+
+/**
+ * 从列表项里取出缩略图摘要。
+ * 兼容三种输入：纯摘要、`/raw/_$flaredrive$/thumbnails/<摘要>.png`、空值。
+ * @param {unknown} value
+ * @returns {string} 小写摘要；无法识别时为空串
+ */
+export function thumbnailDigest(value) {
+  if (value == null) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+  const matched = THUMBNAIL_PATH_PATTERN.exec(text);
+  if (matched) return matched[1].toLowerCase();
+  const name = basename(text).replace(/\.png$/i, "");
+  return THUMBNAIL_DIGEST_PATTERN.test(name) ? name.toLowerCase() : "";
+}
+
+/**
+ * 缩略图请求 URL：`/raw/_$flaredrive$/thumbnails/{digest}.png`（需要认证，不要直接塞进 <img src>）
+ * @param {string} digest
+ * @returns {string} 摘要非法时返回空串
+ */
+export function thumbnailUrl(digest) {
+  const value = thumbnailDigest(digest);
+  if (!value) return "";
+  return rawUrl(joinKey(THUMBNAIL_PREFIX, `${value}.png`));
+}
+
+/** 摘要 → Promise<blob URL|null> 的会话内缓存（挂在全局状态上，跨组件共享） */
+function thumbnailCache() {
+  const shared = state();
+  if (!shared.thumbnails) shared.thumbnails = new Map();
+  return shared.thumbnails;
+}
+
+/**
+ * 带认证取回缩略图并转成 `blob:` URL。
+ * 同一摘要只会真正请求一次：成功缓存 URL，失败缓存 null（避免反复重试打爆服务端）。
+ * @param {string} digest
+ * @returns {Promise<string|null>} 失败返回 null
+ */
+export function loadThumbnail(digest) {
+  const value = thumbnailDigest(digest);
+  if (!value) return Promise.resolve(null);
+  const cache = thumbnailCache();
+  if (cache.has(value)) return cache.get(value);
+  const task = (async () => {
+    try {
+      const url = thumbnailUrl(value);
+      const response = await apiFetch(url);
+      if (!response.ok) return null;
+      const blob = await response.blob();
+      if (!blob || !blob.size) return null;
+      return URL.createObjectURL(blob);
+    } catch (error) {
+      console.warn("缩略图加载失败：", value, errorMessage(error));
+      return null;
+    }
+  })();
+  cache.set(value, task);
+  return task;
+}
+
+/* ------------------------------------------------------------------ *
+ * 分享链接（docs/API.md 第 10 节，唯一允许匿名读取的通道）
+ * ------------------------------------------------------------------ */
+
+/** 把 /api/shares 的单条响应整理成稳定结构 */
+export function normalizeShare(data) {
+  const raw = data && typeof data === "object" ? data : {};
+  const url = typeof raw.url === "string" ? raw.url : "";
+  let absolute = typeof raw.absoluteUrl === "string" ? raw.absoluteUrl : "";
+  if (!absolute && url) absolute = absoluteUrl(url);
+  return {
+    token: raw.token ? String(raw.token) : "",
+    key: normalizePath(raw.key == null ? "" : raw.key),
+    type: raw.type === "folder" ? "folder" : "file",
+    url,
+    absoluteUrl: absolute,
+    createdAt: raw.createdAt || null,
+    createdBy: raw.createdBy ? String(raw.createdBy) : "",
+    expiresAt: raw.expiresAt || null,
+  };
+}
+
+/** 分享类型的中文文案 */
+export function shareTypeLabel(type) {
+  return type === "folder" ? "文件夹" : "文件";
+}
+
+/**
+ * 创建分享链接；同一个 key 已有未过期分享时服务端返回既有的那条（200）。
+ * @param {string} key 目录传目录键，不带尾斜杠
+ * @param {{expiresInDays?: number}} [options]
+ */
+export async function createShare(key, options) {
+  const settings = options || {};
+  const body = { key: normalizePath(key) };
+  const days = Number(settings.expiresInDays);
+  if (Number.isInteger(days) && days > 0) body.expiresInDays = days;
+  const data = await apiFetchJson("/api/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return normalizeShare(data);
+}
+
+/** `GET /api/shares`：普通账号只看到自己创建的，`*` 权限账号看到全部 */
+export async function listShares() {
+  const data = await apiFetchJson("/api/shares");
+  const list = data && Array.isArray(data.shares) ? data.shares : [];
+  return list.map(normalizeShare);
+}
+
+/** `DELETE /api/shares/{token}`：成功 204；已不存在（404）按已失效处理 */
+export async function revokeShare(token) {
+  const url = `/api/shares/${encodeURIComponent(String(token == null ? "" : token))}`;
+  const response = await apiFetch(url, { method: "DELETE" });
+  if (!response.ok && response.status !== 404) {
+    throw new ApiError(await describeResponseError(response), response.status, url);
+  }
+  return response.status;
+}
+
+/* ------------------------------------------------------------------ *
+ * 编辑历史与回退（docs/API.md 第 11 节）
+ * ------------------------------------------------------------------ */
+
+/** `GET /api/versions/list/{key}` */
+export function versionsListUrl(key) {
+  const encoded = encodeKeyPath(key);
+  return encoded ? `/api/versions/list/${encoded}` : "/api/versions/list/";
+}
+
+/** `GET /api/versions/content/{key}/{id}` */
+export function versionContentUrl(key, id) {
+  const encoded = encodeKeyPath(key);
+  const versionId = encodeURIComponent(String(id == null ? "" : id));
+  return encoded
+    ? `/api/versions/content/${encoded}/${versionId}`
+    : `/api/versions/content//${versionId}`;
+}
+
+/** `POST /api/versions/restore/{key}/{id}` */
+export function versionRestoreUrl(key, id) {
+  return versionContentUrl(key, id).replace("/api/versions/content/", "/api/versions/restore/");
+}
+
+/** `DELETE /api/versions/remove/{key}/{id}` */
+export function versionRemoveUrl(key, id) {
+  return versionContentUrl(key, id).replace("/api/versions/content/", "/api/versions/remove/");
+}
+
+/** 把版本项整理成稳定结构：时间字段兼容 uploadedAt / uploaded */
+export function normalizeVersion(data) {
+  const raw = data && typeof data === "object" ? data : {};
+  return {
+    id: raw.id ? String(raw.id) : "",
+    size: Number(raw.size) || 0,
+    uploaded: raw.uploadedAt || raw.uploaded || null,
+    savedBy: raw.savedBy ? String(raw.savedBy) : "",
+  };
+}
+
+/** 列出历史版本（服务端已按时间倒序返回，这里再兜底排一次） */
+export async function listVersions(key) {
+  const data = await apiFetchJson(versionsListUrl(key));
+  const list = data && Array.isArray(data.versions) ? data.versions : [];
+  return list
+    .map(normalizeVersion)
+    .filter((item) => item.id)
+    .sort((left, right) => {
+      const leftTime = left.uploaded ? Date.parse(left.uploaded) : 0;
+      const rightTime = right.uploaded ? Date.parse(right.uploaded) : 0;
+      if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return 0;
+      return rightTime - leftTime;
+    });
+}
+
+/** 读取某个历史版本的文本内容 */
+export async function fetchVersionContent(key, id) {
+  const url = versionContentUrl(key, id);
+  const response = await apiFetch(url, { cache: "no-store" });
+  if (!response.ok) throw new ApiError(await describeResponseError(response), response.status, url);
+  return response.text();
+}
+
+/** 把某个历史版本恢复成当前内容（服务端恢复前也会给当前内容存一份快照） */
+export async function restoreVersion(key, id) {
+  const url = versionRestoreUrl(key, id);
+  const response = await apiFetch(url, { method: "POST" });
+  if (!response.ok) throw new ApiError(await describeResponseError(response), response.status, url);
+  return response.status;
+}
+
+/** 删除某个历史版本；已不存在（404）按已删除处理 */
+export async function removeVersion(key, id) {
+  const url = versionRemoveUrl(key, id);
+  const response = await apiFetch(url, { method: "DELETE" });
+  if (!response.ok && response.status !== 404) {
+    throw new ApiError(await describeResponseError(response), response.status, url);
+  }
+  return response.status;
 }

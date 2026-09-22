@@ -218,19 +218,39 @@ export interface ListingEntry {
 }
 
 /** 生成一个极简的目录浏览页，方便直接用浏览器打开 WebDAV 目录。 */
+export interface DirectoryListingOptions {
+  env: Env;
+  /** 标题（默认用路径）。 */
+  title?: string;
+  /** 自定义每个条目的链接（分享页用 `/s/{token}/...`）。 */
+  linkFor?: (entry: ListingEntry) => string;
+  /** 返回上级的链接；传 null 表示不显示。默认回到 /webdav 的上级。 */
+  parentHref?: string | null;
+  /** 页面底部的说明文字。 */
+  note?: string;
+}
+
+function encodeKeyPath(key: string): string {
+  return key.split("/").map(encodeURIComponent).join("/");
+}
+
 export function renderDirectoryListing(
   path: string,
   entries: ListingEntry[],
-  options: { env: Env }
+  options: DirectoryListingOptions
 ): Response {
   const target = normalizePath(path);
-  const title = target ? `${target}/` : "/";
+  const title = options.title || (target ? `${target}/` : "/");
+
+  const defaultLink = (entry: ListingEntry) =>
+    entry.isDirectory
+      ? `/webdav/${encodeKeyPath(entry.key)}/`
+      : `/raw/${encodeKeyPath(entry.key)}`;
+  const linkFor = options.linkFor || defaultLink;
 
   const rows = entries
     .map((entry) => {
-      const href = entry.isDirectory
-        ? `/webdav/${entry.key.split("/").map(encodeURIComponent).join("/")}/`
-        : `/raw/${entry.key.split("/").map(encodeURIComponent).join("/")}`;
+      const href = linkFor(entry);
       const label = escapeHtml(entry.isDirectory ? `${entry.name}/` : entry.name);
       const size = entry.isDirectory ? "-" : formatSize(entry.size);
       const modified = entry.uploaded
@@ -242,17 +262,29 @@ export function renderDirectoryListing(
     })
     .join("\n");
 
-  const parent = target.includes("/")
-    ? target.slice(0, target.lastIndexOf("/"))
-    : "";
-  const parentLink =
-    target === ""
-      ? ""
-      : `<tr><td><a href="/webdav/${parent
-          .split("/")
-          .filter(Boolean)
-          .map(encodeURIComponent)
-          .join("/")}${parent ? "/" : ""}">../</a></td><td class="num">-</td><td class="num">-</td></tr>`;
+  let parentLink = "";
+  if (options.parentHref !== null) {
+    if (typeof options.parentHref === "string") {
+      parentLink = `<tr><td><a href="${escapeHtml(
+        options.parentHref
+      )}">../</a></td><td class="num">-</td><td class="num">-</td></tr>`;
+    } else if (target !== "") {
+      const parent = target.includes("/")
+        ? target.slice(0, target.lastIndexOf("/"))
+        : "";
+      parentLink = `<tr><td><a href="/webdav/${parent
+        .split("/")
+        .filter(Boolean)
+        .map(encodeURIComponent)
+        .join("/")}${parent ? "/" : ""}">../</a></td><td class="num">-</td><td class="num">-</td></tr>`;
+    }
+  }
+
+  const note =
+    options.note ||
+    `这是 WebDAV 目录的只读浏览页。要上传和管理文件，请使用 <a href="/?p=${encodeURIComponent(
+      target
+    )}">网页端</a> 或 WebDAV 客户端。`;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -280,9 +312,7 @@ ${parentLink}
 ${rows}
 </tbody>
 </table>
-<p class="hint">这是 WebDAV 目录的只读浏览页。要上传和管理文件，请使用 <a href="/?p=${encodeURIComponent(
-    target
-  )}">网页端</a> 或 WebDAV 客户端。</p>
+<p class="hint">${note}</p>
 </body>
 </html>`;
 

@@ -9,6 +9,7 @@ import {
 } from "../../utils/auth";
 import { notFound, parseBucketPath, serverError } from "../../utils/bucket";
 import { isThumbnailKey, statPath } from "../../utils/core";
+import { verifySignedKey } from "../../utils/signing";
 import { serveObject } from "../../utils/serve";
 
 /**
@@ -24,6 +25,8 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     const { bucket, path } = parsed;
     if (!path) return notFound();
 
+    const url = new URL(request.url);
+
     // 内部保留目录只允许直接访问缩略图
     if (isInternalPath(path) && !isThumbnailKey(path)) return notFound();
 
@@ -34,8 +37,19 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
       env,
     };
 
-    if (!canRead(subject, path)) {
-      return auth.anonymous
+    // 允许两种放行方式：正常权限，或一张针对该 key 的短时效签名
+    // （签名直链用于让浏览器原生下载，避免私有模式下前端先取回整文件再存）
+    const signedOk = await verifySignedKey(
+      env,
+      path,
+      url.searchParams.get("exp"),
+      url.searchParams.get("sig")
+    );
+
+    if (!signedOk && !canRead(subject, path)) {
+      return auth.invalid
+        ? unauthorized("用户名或密码不正确")
+        : auth.anonymous
         ? unauthorized("需要登录")
         : forbidden("没有读取该对象的权限");
     }
@@ -49,7 +63,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     });
     if (!response) return notFound();
 
-    const url = new URL(request.url);
+    // url 已在前面声明，这里直接复用
     const forceDownload =
       url.searchParams.has("download") || url.searchParams.has("dl");
     if (!forceDownload) return response;

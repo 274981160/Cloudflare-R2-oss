@@ -344,6 +344,7 @@ import {
   removeKey,
   setUnauthorizedHandler,
   thumbnailDigest,
+  signedDownloadUrl,
   uploadWithThumbnail,
   whoami as fetchWhoami,
 } from "/assets/main.mjs";
@@ -400,6 +401,9 @@ export default {
     editorItem: null,
     editorForceText: false,
     focusedItem: null,
+    /** 打开右键菜单时预取的签名直链，让下载走浏览器原生下载 */
+    signedUrl: "",
+    signedForKey: "",
     newFolderName: "",
     renameTarget: null,
     renameName: "",
@@ -536,6 +540,10 @@ export default {
   },
 
   watch: {
+    focusedItem(item) {
+      this.prefetchSignedUrl(item);
+    },
+
     cwd: {
       handler() {
         this.selectedKeys = [];
@@ -808,9 +816,38 @@ export default {
       await this.fetchFiles();
     },
 
+    /** 打开菜单时就把签名直链取好，点击下载时才能同步触发（浏览器手势不失效） */
+    async prefetchSignedUrl(item) {
+      this.signedUrl = "";
+      this.signedForKey = "";
+      if (!item || !item.key) return;
+      try {
+        const url = await signedDownloadUrl(item.key);
+        if (url) {
+          this.signedUrl = url;
+          this.signedForKey = item.key;
+        }
+      } catch (error) {
+        // 取不到签名就退回「取回 Blob」的方式
+      }
+    },
+
     async downloadItem(item) {
       if (!item) return;
       try {
+        // 签名直链已就绪：同步点击，交给浏览器原生下载（有进度、秒弹保存框）
+        if (this.signedUrl && this.signedForKey === item.key) {
+          const anchor = document.createElement("a");
+          anchor.href = this.signedUrl;
+          if (item.name) anchor.download = item.name;
+          anchor.rel = "noopener";
+          anchor.style.display = "none";
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          this.showNotice(`已开始下载「${item.name}」`, "success");
+          return;
+        }
         if (item.type === "folder") {
           this.showNotice(`正在打包「${item.name}」...`, "info");
           await downloadZip(item.key);

@@ -14,6 +14,7 @@ import {
   serverError,
 } from "../../../utils/bucket";
 import { buildZipResponse } from "../../../utils/zipserve";
+import { verifySignedKey } from "../../../utils/signing";
 
 /**
  * 目录打包下载（需要认证）。实际打包逻辑在 utils/zipserve.ts，
@@ -29,6 +30,8 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
 
     if (!path) return badRequest("不能打包根目录");
 
+    const requestUrl = new URL(request.url);
+
     const auth = await authenticate(request, env, bucket);
     if (auth.invalid) return unauthorized("用户名或密码不正确");
     const subject: Subject = {
@@ -37,15 +40,26 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
       env,
     };
 
-    const allowed = canList(subject, path) || canRead(subject, path);
+    // 同样允许「正常权限」或「短时效签名」两种放行方式
+    const signedOk = await verifySignedKey(
+      env,
+      path,
+      requestUrl.searchParams.get("exp"),
+      requestUrl.searchParams.get("sig")
+    );
+
+    const allowed = signedOk || canList(subject, path) || canRead(subject, path);
     if (!allowed) {
-      return auth.anonymous
+      return auth.invalid
+        ? unauthorized("用户名或密码不正确")
+        : auth.anonymous
         ? unauthorized("需要登录")
         : forbidden("没有下载该路径的权限");
     }
 
     return await buildZipResponse(bucket, path, env, {
-      filter: (key: string) => canRead(subject, key),
+      // 有签名就代表整棵子树都被授权，不再逐个过滤
+      filter: signedOk ? undefined : (key: string) => canRead(subject, key),
     });
   } catch (error) {
     return serverError(error);

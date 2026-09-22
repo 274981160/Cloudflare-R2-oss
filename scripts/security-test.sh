@@ -144,7 +144,26 @@ check "受限账号读他人 key 的历史 403" 403 "$(u1code "$BASE/api/version
 check "匿名列历史 401" 401 "$(code "$BASE/api/versions/list/_sec/ver.txt")"
 check "匿名读历史内容 401" 401 "$(code "$BASE/api/versions/content/_sec/ver.txt/$VID")"
 
-section "9. 清理"
+section "9. 下载签名直链"
+check "匿名取签名 401" 401 "$(code "$BASE/api/sign?key=_sec/a.txt")"
+check "缺 key 参数 400" 400 "$(acode "$BASE/api/sign")"
+check "不存在的对象 404" 404 "$(acode "$BASE/api/sign?key=_sec/不存在.txt")"
+check "受限账号签他人路径 403" 403 "$(u1code "$BASE/api/sign?key=_sec/a.txt")"
+SIGN="$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_sec/a.txt")"
+SURL="$(printf '%s' "$SIGN" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)"
+atleast "admin 取到签名 URL" 1 "$(printf '%s' "$SURL" | grep -c '/raw/_sec/a.txt?exp=')"
+check "签名直链匿名可下载 200" 200 "$(code "$BASE$SURL")"
+check "签名直链内容正确" "secret-a" "$(curl -s "$BASE$SURL")"
+check "篡改签名被拒 401" 401 "$(code "$BASE/raw/_sec/a.txt?exp=9999999999&sig=deadbeef")"
+check "只有 exp 没有 sig 被拒 401" 401 "$(code "$BASE/raw/_sec/a.txt?exp=9999999999")"
+SIGFOLDER="$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_sec" | grep -o '"url":"[^"]*"' | cut -d'"' -f4)"
+atleast "目录签名指向 zip 接口" 1 "$(printf '%s' "$SIGFOLDER" | grep -c '/api/zip/_sec?exp=')"
+check "目录签名匿名打包 200" 200 "$(code "$BASE$SIGFOLDER")"
+curl -s "$BASE$SIGFOLDER" -o /tmp/sign-share.zip
+check "目录签名打包是合法 zip" "PK" "$(head -c 2 /tmp/sign-share.zip)"
+check "签名不能读到别的对象 401" 401 "$(code "$BASE/raw/_sec/sub/b.txt?exp=9999999999&sig=deadbeef")"
+
+section "10. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"
 

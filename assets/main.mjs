@@ -716,6 +716,18 @@ export function fetchBlobWithProgress(url, options) {
   });
 }
 
+/**
+ * 取一个短时效的下载直链。
+ * 私有模式下浏览器直链带不上认证头，用它就能让浏览器做**原生下载**
+ * （有进度条、立刻弹保存框，也不会被浏览器在异步之后拦掉）。
+ * 服务端没配签名密钥时返回 null，调用方应退回「取回 Blob」的方式。
+ */
+export async function signedDownloadUrl(key) {
+  const url = `/api/sign?key=${encodeURIComponent(String(key == null ? "" : key))}`;
+  const data = await apiFetchJson(url, { cache: "no-store" });
+  return data && typeof data.url === "string" && data.url ? data.url : null;
+}
+
 export async function downloadKey(key, options) {
   const name = basename(key) || "download";
   const publicRead = !!(options && options.publicRead);

@@ -1,0 +1,2 @@
+# 浏览器默认会请求 /favicon.ico，统一指向站点图标，避免多余 404
+/favicon.ico  /assets/favicon.png  200

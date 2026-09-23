@@ -16,7 +16,12 @@ import {
   serverError,
 } from "../../../utils/bucket";
 import { statPath } from "../../../utils/core";
-import { extractZipArchive, readZipIndex } from "../../../utils/unzip";
+import {
+  extractZipArchive,
+  findZipConflicts,
+  readZipIndex,
+  type UnzipMode,
+} from "../../../utils/unzip";
 
 /**
  * 在线解压：把网盘里的 zip 文件解压到指定目录（默认解到它所在的目录）。
@@ -45,11 +50,13 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
     }
 
     let target = "";
+    let mode = "skip";
     try {
       const body: any = await request.json();
       if (typeof body?.target === "string" && body.target.trim()) {
         target = body.target.trim().replace(/^\/+|\/+$/g, "");
       }
+      if (["check", "skip", "overwrite"].includes(body?.mode)) mode = body.mode;
     } catch (error) {
       /* 没有 body 就默认解到 zip 所在目录 */
     }
@@ -78,6 +85,24 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
     const index = await readZipIndex(bucket, path, stat.size);
     if (!index) return badRequest("不是有效的 zip 文件");
 
+    // mode=check：只报告同名冲突，不写任何东西（前端据此问用户「跳过还是覆盖」）
+    if (mode === "check") {
+      const pre = await findZipConflicts(
+        bucket,
+        path,
+        stat.size,
+        target,
+        (key) => canWrite(subject, key),
+        index
+      );
+      return jsonResponse({
+        target,
+        total: pre.total,
+        conflictCount: pre.conflicts.length,
+        conflicts: pre.conflicts.slice(0, 20),
+      });
+    }
+
     const result = await extractZipArchive(
       bucket,
       path,
@@ -85,9 +110,15 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
       target,
       env,
       (key) => canWrite(subject, key),
-      index
+      index,
+      { mode: mode as UnzipMode }
     );
-    return jsonResponse({ target, files: result.files, errors: result.errors });
+    return jsonResponse({
+      target,
+      files: result.files,
+      skipped: result.skipped,
+      errors: result.errors,
+    });
   } catch (error) {
     return serverError(error);
   }

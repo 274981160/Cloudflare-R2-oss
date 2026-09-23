@@ -775,14 +775,24 @@ export async function downloadZip(path, options) {
  * 在线解压：`POST /api/unzip/{zipKey}`，把 zip 解压到 target 目录。
  * @param {string} zipKey
  * @param {string} [target] 目标目录 key；省略时解到 zip 所在目录
- * @returns {Promise<{target:string, files:number, errors:string[]}>}
+ * @param {{mode?: "check"|"skip"|"overwrite"}} [options]
+ *   check=只查同名冲突不写盘；skip=跳过同名（默认）；overwrite=覆盖同名
+ * @returns {Promise<{target:string, files?:number, skipped?:number, errors?:string[],
+ *   total?:number, conflictCount?:number, conflicts?:string[]}>}
  */
-export async function extractArchive(zipKey, target) {
+export async function extractArchive(zipKey, target, options) {
   const encoded = encodeKeyPath(zipKey);
   const url = `/api/unzip/${encoded}`;
-  const body = target ? JSON.stringify({ target }) : undefined;
-  const headers = body ? { "Content-Type": "application/json" } : undefined;
-  return apiFetchJson(url, { method: "POST", body, headers });
+  const settings = options || {};
+  const payload = {};
+  if (target) payload.target = target;
+  if (settings.mode) payload.mode = settings.mode;
+  const body = JSON.stringify(payload);
+  return apiFetchJson(url, {
+    method: "POST",
+    body,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 /**

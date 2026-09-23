@@ -1582,15 +1582,32 @@ export default {
       }
       const base = stripExtension(item.name || "解压") || "解压";
       const targetDir = joinKey(this.cwd, base);
-      this.showNotice(`正在解压「${item.name}」...`, "info");
       try {
-        const result = await extractArchive(item.key, targetDir);
-        const failed = Array.isArray(result.errors) ? result.errors.length : 0;
-        if (failed) {
-          this.showNotice(`解压完成但有 ${failed} 项失败：${result.errors[0]}`, "error");
-        } else {
-          this.showNotice(`解压完成，共 ${result.files || 0} 个文件`, "success");
+        // 先问后端目标里有没有同名文件，再让用户决定「跳过」还是「覆盖」，
+        // 默认跳过，绝不静默覆盖已有文件
+        this.showNotice(`正在检查「${item.name}」里的同名文件...`, "info");
+        const pre = await extractArchive(item.key, targetDir, { mode: "check" });
+        let mode = "skip";
+        const conflictCount = Number(pre && pre.conflictCount) || 0;
+        if (conflictCount > 0) {
+          const preview = (pre.conflicts || []).slice(0, 5).join("、");
+          const more = conflictCount > 5 ? ` 等 ${conflictCount} 个` : "";
+          const overwrite = window.confirm(
+            `目标文件夹里已有 ${conflictCount} 个同名文件：\n${preview}${more}\n\n` +
+              `点「确定」= 用压缩包里的内容覆盖它们\n` +
+              `点「取消」= 跳过这些同名文件，保留现有文件（默认）`
+          );
+          mode = overwrite ? "overwrite" : "skip";
         }
+
+        this.showNotice(`正在解压「${item.name}」...`, "info");
+        const result = await extractArchive(item.key, targetDir, { mode });
+        const failed = Array.isArray(result.errors) ? result.errors.length : 0;
+        const skipped = Number(result.skipped) || 0;
+        const parts = [`解压完成，共 ${result.files || 0} 个文件`];
+        if (skipped) parts.push(`跳过同名 ${skipped} 个`);
+        if (failed) parts.push(`失败 ${failed} 个（${result.errors[0]}）`);
+        this.showNotice(parts.join("，"), failed ? "error" : "success");
         await this.fetchFiles();
       } catch (error) {
         this.showNotice(`解压失败：${errorMessage(error)}`, "error");

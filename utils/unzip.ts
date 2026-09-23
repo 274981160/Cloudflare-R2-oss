@@ -5,7 +5,7 @@
  */
 import { Env } from "./config";
 import { DIRECTORY_CONTENT_TYPE, maxUnzipEntries, maxUnzipFileSize } from "./config";
-import { ensureDirectories } from "./core";
+import { ensureDirectories, isDirectoryObject, listAll } from "./core";
 import { normalizePath } from "./auth";
 import { inflate } from "./inflate";
 
@@ -201,11 +201,100 @@ export function safeZipEntryPath(targetDir: string, zipName: string): string | n
 }
 
 /**
+ * 解压时遇到同名文件怎么办：
+ * - `skip`（默认）：保留目标里已有的文件，跳过同名条目
+ * - `overwrite`：用压缩包里的内容覆盖
+ */
+export type UnzipMode = "skip" | "overwrite";
+
+/** 列目标目录下已有对象的清单，用于解压前判断同名冲突。 */
+export interface ExistingIndex {
+  /** key -> 该对象是否是「目录对象」 */
+  entries: Map<string, boolean>;
+  /** 目录里对象太多、清单被截断（此时改用逐个 head 兜底） */
+  truncated: boolean;
+}
+
+/** 列清单最多记住多少条，避免超大目录把内存撑爆 */
+const EXISTING_LIMIT = 20000;
+
+export async function listExistingKeys(
+  bucket: R2Bucket,
+  targetDir: string
+): Promise<ExistingIndex> {
+  const prefix = targetDir ? `${targetDir}/` : "";
+  const entries = new Map<string, boolean>();
+  let truncated = false;
+  for await (const object of listAll(bucket, prefix, true)) {
+    if (entries.size >= EXISTING_LIMIT) {
+      truncated = true;
+      break;
+    }
+    entries.set(object.key as string, isDirectoryObject(object));
+  }
+  return { entries, truncated };
+}
+
+/** 单个 key 是否已存在（清单被截断时的兜底） */
+async function keyExists(
+  bucket: R2Bucket,
+  key: string
+): Promise<{ exists: boolean; isDirectory: boolean }> {
+  const head: any = await bucket.head(key);
+  if (!head) return { exists: false, isDirectory: false };
+  return { exists: true, isDirectory: isDirectoryObject(head) };
+}
+
+/**
+ * 解压前预检：目标里已经存在哪些同名文件。
+ * 不做任何写入，供前端先问用户「跳过还是覆盖」。
+ */
+export async function findZipConflicts(
+  bucket: R2Bucket,
+  zipKey: string,
+  zipSize: number,
+  targetDir: string,
+  isWriteAllowed: (key: string) => boolean,
+  preloadedIndex?: ZipEntryInfo[] | null
+): Promise<{ total: number; conflicts: string[] }> {
+  const entries = preloadedIndex !== undefined
+    ? preloadedIndex
+    : await readZipIndex(bucket, zipKey, zipSize);
+  if (!entries) throw new Error("不是有效的 zip 文件（找不到目录索引）");
+
+  const existing = await listExistingKeys(bucket, targetDir);
+  const conflicts: string[] = [];
+
+  for (const entry of entries) {
+    const target = safeZipEntryPath(targetDir, entry.name);
+    if (!target || !isWriteAllowed(target)) continue;
+
+    let exists: boolean;
+    let existingIsDir = false;
+    if (existing.truncated) {
+      const probe = await keyExists(bucket, target);
+      exists = probe.exists;
+      existingIsDir = probe.isDirectory;
+    } else {
+      exists = existing.entries.has(target);
+      existingIsDir = existing.entries.get(target) === true;
+    }
+    if (!exists) continue;
+    // 目录对象和目录条目不算冲突（文件夹本来就会重复出现）
+    if (entry.isDirectory && existingIsDir) continue;
+    conflicts.push(entry.name);
+  }
+
+  return { total: entries.length, conflicts };
+}
+
+/**
  * 在线解压：
  * - 读取 zip 索引，逐条把文件写入 R2；
  * - 目录条目创建目录对象；
- * - isWriteAllowed(key) 决定每个目标是否可写（权限过滤）。
- * 返回解压出的文件数；错误逐条收集。
+ * - isWriteAllowed(key) 决定每个目标是否可写（权限过滤）；
+ * - mode 为 `skip` 时保留目标里已有的同名文件（默认，避免误覆盖）。
+ * 返回解压出的文件数、跳过数与逐条错误。
  */
 export async function extractZipArchive(
   bucket: R2Bucket,
@@ -214,17 +303,20 @@ export async function extractZipArchive(
   targetDir: string,
   env: Env,
   isWriteAllowed: (key: string) => boolean,
-  preloadedIndex?: ZipEntryInfo[] | null
-): Promise<{ files: number; errors: string[] }> {
+  preloadedIndex?: ZipEntryInfo[] | null,
+  options: { mode?: UnzipMode } = {}
+): Promise<{ files: number; skipped: number; errors: string[] }> {
   const entries = preloadedIndex !== undefined
     ? preloadedIndex
     : await readZipIndex(bucket, zipKey, zipSize);
   if (!entries) throw new Error("不是有效的 zip 文件（找不到目录索引）");
 
+  const mode: UnzipMode = options.mode === "overwrite" ? "overwrite" : "skip";
+  const existing = mode === "skip" ? await listExistingKeys(bucket, targetDir) : null;
+
   const errors: string[] = [];
   let files = 0;
-
-  const pendingDirs = new Set<string>();
+  let skipped = 0;
 
   for (const entry of entries) {
     const target = safeZipEntryPath(targetDir, entry.name);
@@ -238,10 +330,28 @@ export async function extractZipArchive(
     }
 
     if (entry.isDirectory) {
+      // 目录已存在就不用重复写
+      const alreadyDir = existing
+        ? existing.truncated
+          ? (await keyExists(bucket, target)).isDirectory
+          : existing.entries.get(target) === true
+        : false;
+      if (alreadyDir) continue;
       await bucket.put(target, "", {
         httpMetadata: { contentType: DIRECTORY_CONTENT_TYPE },
       });
       continue;
+    }
+
+    // 默认不覆盖：目标已有同名文件就跳过，保住用户原有数据
+    if (existing) {
+      const exists = existing.truncated
+        ? (await keyExists(bucket, target)).exists
+        : existing.entries.has(target);
+      if (exists) {
+        skipped += 1;
+        continue;
+      }
     }
 
     const fileLimit = maxUnzipFileSize(env);
@@ -252,11 +362,11 @@ export async function extractZipArchive(
         httpMetadata: { contentType: "application/octet-stream" },
       });
       files += 1;
+      if (existing && !existing.truncated) existing.entries.set(target, false);
     } catch (error) {
       errors.push(`${entry.name}：${error instanceof Error ? error.message : String(error)}`);
     }
-    void pendingDirs;
   }
 
-  return { files, errors };
+  return { files, skipped, errors };
 }

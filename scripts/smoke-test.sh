@@ -379,6 +379,28 @@ check "搜不到内部目录（缩略图）" 0 "$(curl -s -u "$ADMIN" "$BASE/api
 check "公开读模式下匿名也能搜" 200 "$(code "$BASE/api/search?q=$SQ")"
 check "清理搜索测试目录 204" 204 "$(acode -X DELETE "$W/search-a")"
 
+section "13.12 分片上传：断点续传与放弃任务"
+MP="$W/multipart"
+check "建分片测试目录 201" 201 "$(acode -X MKCOL "$MP")"
+MPCREATE="$(curl -s -u "$ADMIN" -X POST "$MP/chunk.bin?uploads")"
+MPID="$(printf '%s' "$MPCREATE" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uploadId') or '')" 2>/dev/null)"
+atleast "创建分片任务返回 uploadId" 1 "$(printf '%s' "$MPID" | grep -c .)"
+# 分片必须 ≥5MB（R2 限制），这里用 5MB + 1MB 两片
+head -c 5000000 /dev/zero > /tmp/smoke-part1.bin
+head -c 1000000 /dev/zero > /tmp/smoke-part2.bin
+MPE1="$(curl -s -D- -o /dev/null -u "$ADMIN" -X PUT --data-binary @/tmp/smoke-part1.bin "$MP/chunk.bin?uploadId=$MPID&partNumber=1" | tr -d '\r' | grep -i '^etag:' | cut -d' ' -f2)"
+check "传第一片 200" 1 "$(printf '%s' "$MPE1" | grep -c .)"
+check "分片响应带 etag" 1 "$(printf '%s' "$MPE1" | grep -c .)"
+check "放弃任务 204" 204 "$(acode -X DELETE "$MP/chunk.bin?uploadId=$MPID")"
+check "放弃后同一任务不能再传片 400" 400 "$(acode -X PUT --data-binary @/tmp/smoke-part2.bin "$MP/chunk.bin?uploadId=$MPID&partNumber=2")"
+check "放弃不存在的任务是幂等的 204" 204 "$(acode -X DELETE "$MP/chunk.bin?uploadId=not-a-real-upload")"
+check "放弃任务不会删掉同名已存在对象 201" 201 "$(acode -X PUT --data 'keep' "$MP/chunk.bin")"
+MPID2="$(curl -s -u "$ADMIN" -X POST "$MP/chunk.bin?uploads" | python3 -c "import json,sys; print(json.load(sys.stdin).get('uploadId') or '')")"
+check "对已有对象也能开分片任务" 1 "$(printf '%s' "$MPID2" | grep -c .)"
+acode -X DELETE "$MP/chunk.bin?uploadId=$MPID2" > /dev/null
+check "放弃后原对象还在" "keep" "$(curl -s "$MP/chunk.bin")"
+check "清理分片测试目录 204" 204 "$(acode -X DELETE "$MP")"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

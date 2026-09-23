@@ -17,6 +17,20 @@ export const DEFAULT_MAX_UPLOAD_SIZE = 100 * 1000 * 1000;
 export const SIZE_LIMIT = 100 * 1000 * 1000;
 /** 分片上传并发数 */
 export const MULTIPART_CONCURRENCY = 2;
+/**
+ * 分片大小 25MB（原来跟着 100MB 的单次上限走）。
+ * 慢网络上 100MB 一片要传好几分钟，一断就白传；
+ * 25MB 大约 1~2 分钟一片，续传粒度细得多，片数也远没到 R2 的上限。
+ */
+export const MULTIPART_PART_SIZE = 25 * 1000 * 1000;
+/** 单个分片最多重试几次（网络抖动不该让整份上传从头再来） */
+export const MULTIPART_PART_RETRIES = 3;
+/**
+ * R2（同 S3）要求：除最后一片外，每片不得小于 5MB，
+ * 否则 complete 会直接报 "smaller than the minimum allowed object size"。
+ * 这里兜个底，避免传参写小了导致整份上传白费。
+ */
+export const MULTIPART_MIN_PART_SIZE = 5 * 1000 * 1000;
 /** 内部保留的缩略图目录前缀 */
 export const THUMBNAIL_PREFIX = "_$flaredrive$/thumbnails/";
 
@@ -2347,6 +2361,21 @@ export function xhrRequest(method, url, body, options) {
       }
     }
     if (settings.responseType) xhr.responseType = settings.responseType;
+    // 支持外部取消：调用方传 signal，abort 时立刻中断当前请求
+    const signal = settings.signal;
+    if (signal) {
+      if (signal.aborted) {
+        reject(new ApiError("已取消", 0, url));
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        try {
+          xhr.abort();
+        } catch (error) {
+          /* 忽略 */
+        }
+      });
+    }
     const onProgress = typeof settings.onUploadProgress === "function" ? settings.onUploadProgress : null;
     if (onProgress && xhr.upload) {
       xhr.upload.onprogress = (event) => {
@@ -2445,14 +2474,109 @@ export async function putFile(key, file, options) {
   );
   const result = await xhrRequest("PUT", url, file, {
     headers,
+    signal: settings.signal,
     onUploadProgress: settings.onUploadProgress,
   });
   ensureOk(result, url);
   return result;
 }
 
+/* ------------------------------------------------------------------ *
+ * 分片上传的「断点续传」会话
+ *
+ * 分片任务（uploadId）与已传分片记在 localStorage 里，按「路径 + 大小 + 修改时间」
+ * 认领。于是网络中断、误刷新页面之后，重新选同一个文件会**接着传**，
+ * 而不是把已经传完的分片再传一遍（慢网络里这可能是几十分钟的差别）。
+ * ------------------------------------------------------------------ */
+
+const UPLOAD_SESSION_PREFIX = "fd_upload_";
+/** 会话最多留 7 天，避免 localStorage 里堆垃圾 */
+const UPLOAD_SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+
+function uploadSessionId(key, file) {
+  const size = Number(file && file.size) || 0;
+  const stamp = Number(file && file.lastModified) || 0;
+  return `${UPLOAD_SESSION_PREFIX}${encodeURIComponent(key)}|${size}|${stamp}`;
+}
+
+function readUploadSession(key, file) {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(uploadSessionId(key, file));
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !data.uploadId || !Array.isArray(data.parts)) return null;
+    if (Date.now() - (Number(data.updatedAt) || 0) > UPLOAD_SESSION_TTL) {
+      localStorage.removeItem(uploadSessionId(key, file));
+      return null;
+    }
+    return data;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeUploadSession(key, file, data) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(
+      uploadSessionId(key, file),
+      JSON.stringify(Object.assign({}, data, { updatedAt: Date.now() }))
+    );
+  } catch (error) {
+    /* 隐私模式/配额满：续传退化成普通上传，不影响功能 */
+  }
+}
+
+function dropUploadSession(key, file) {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.removeItem(uploadSessionId(key, file));
+  } catch (error) {
+    /* 忽略 */
+  }
+}
+
+/** 这个文件有没有可续传的进度（给界面提示用） */
+export function pendingUploadInfo(key, file) {
+  const session = readUploadSession(key, file);
+  if (!session) return null;
+  return {
+    uploadId: session.uploadId,
+    doneParts: session.parts.length,
+    totalParts: Number(session.totalParts) || 0,
+    loaded: Number(session.loaded) || 0,
+  };
+}
+
+/** 放弃某个文件的分片上传：取消服务端任务并清掉本地进度 */
+export async function abortUpload(key, file) {
+  const session = readUploadSession(key, file);
+  dropUploadSession(key, file);
+  if (!session) return;
+  try {
+    await xhrRequest(
+      "DELETE",
+      `${webdavPath(key)}?uploadId=${encodeURIComponent(session.uploadId)}`,
+      null,
+      {}
+    );
+  } catch (error) {
+    /* 服务端任务可能已经不存在，忽略 */
+  }
+}
+
+/** 等一下再重试（指数退避） */
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * 分片上传：`POST ?uploads` → 并发 2 片 `PUT ?uploadId=&partNumber=` → `POST ?uploadId=`
+ * 分片上传（支持断点续传）：`POST ?uploads` → 并发 2 片 `PUT ?uploadId=&partNumber=` → `POST ?uploadId=`
+ *
+ * - 每个分片失败自动重试（最多 MULTIPART_PART_RETRIES 次，指数退避）
+ * - 每传完一片就把进度写进 localStorage，中断后可接着传
+ * - 复用的 uploadId 失效时自动重建任务，从零重传（至少不会卡死）
  * @param {string} key
  * @param {File|Blob} file
  * @param {{headers?: Record<string,string>, onUploadProgress?: Function, partSize?: number, concurrency?: number}} [options]
@@ -2461,24 +2585,37 @@ export async function multipartUpload(key, file, options) {
   const settings = options || {};
   const url = webdavPath(key);
   const headers = Object.assign({}, settings.headers || {});
-
-  const createResult = await xhrRequest("POST", `${url}?uploads`, null, { headers });
-  ensureOk(createResult, `${url}?uploads`);
-  let created = null;
-  try {
-    created = JSON.parse(createResult.responseText || "{}");
-  } catch (error) {
-    throw new ApiError("无法解析分片上传响应", createResult.status, `${url}?uploads`);
-  }
-  const uploadId = created && created.uploadId;
-  if (!uploadId) throw new ApiError("服务端未返回 uploadId", createResult.status, `${url}?uploads`);
-
-  const partSize = Number(settings.partSize) > 0 ? Number(settings.partSize) : SIZE_LIMIT;
+  const partSize = Math.max(
+    Number(settings.partSize) > 0 ? Number(settings.partSize) : MULTIPART_PART_SIZE,
+    MULTIPART_MIN_PART_SIZE
+  );
   const totalParts = Math.max(1, Math.ceil(file.size / partSize));
-  const concurrency = Math.max(1, Math.min(Number(settings.concurrency) || MULTIPART_CONCURRENCY, totalParts));
-  const onProgress = typeof settings.onUploadProgress === "function" ? settings.onUploadProgress : null;
+  const concurrency = Math.max(
+    1,
+    Math.min(Number(settings.concurrency) || MULTIPART_CONCURRENCY, totalParts)
+  );
+  const onProgress =
+    typeof settings.onUploadProgress === "function" ? settings.onUploadProgress : null;
+  const signal = settings.signal || null;
+
+  // 有可续传的进度就复用原来的 uploadId 与已传分片
+  const resumed = readUploadSession(key, file);
+  let uploadId = resumed ? String(resumed.uploadId) : "";
+  let parts = new Array(totalParts);
   const loadedByPart = new Array(totalParts + 1).fill(0);
-  const parts = new Array(totalParts);
+  let resumedCount = 0;
+
+  if (resumed) {
+    for (const part of resumed.parts) {
+      const index = Number(part && part.partNumber);
+      if (!Number.isFinite(index) || index < 1 || index > totalParts) continue;
+      if (!part.etag) continue;
+      parts[index - 1] = { partNumber: index, etag: String(part.etag) };
+      const start = (index - 1) * partSize;
+      loadedByPart[index] = Math.min(partSize, file.size - start);
+      resumedCount += 1;
+    }
+  }
 
   const report = () => {
     if (!onProgress) return;
@@ -2487,47 +2624,147 @@ export async function multipartUpload(key, file, options) {
     onProgress({ loaded: Math.min(loaded, file.size), total: file.size });
   };
 
+  const persist = () => {
+    writeUploadSession(key, file, {
+      key,
+      size: file.size,
+      uploadId,
+      totalParts,
+      loaded: loadedByPart.reduce((sum, value) => sum + value, 0),
+      parts: parts.filter(Boolean),
+    });
+  };
+
+  const createTask = async () => {
+    const createResult = await xhrRequest("POST", `${url}?uploads`, null, { headers });
+    ensureOk(createResult, `${url}?uploads`);
+    let created = null;
+    try {
+      created = JSON.parse(createResult.responseText || "{}");
+    } catch (error) {
+      throw new ApiError("无法解析分片上传响应", createResult.status, `${url}?uploads`);
+    }
+    const id = created && created.uploadId;
+    if (!id) throw new ApiError("服务端未返回 uploadId", createResult.status, `${url}?uploads`);
+    return String(id);
+  };
+
+  if (!uploadId) uploadId = await createTask();
+
+  /**
+   * 复用的任务可能已经被 R2 清理掉（未完成的分片任务不会永久保留）。
+   * 这种情况下分片请求会报 400/404，我们**不预先探测**（探测要重传一片，
+   * 慢网络里那就是白传几十 MB），而是等真的失败时重建任务、从零重来。
+   * 多个 worker 可能同时触发，用同一个 promise 保证只重建一次。
+   */
+  let rebuildPromise = null;
+  const rebuildTask = async () => {
+    if (!rebuildPromise) {
+      rebuildPromise = (async () => {
+        uploadId = await createTask();
+        parts = new Array(totalParts);
+        loadedByPart.fill(0);
+        resumedCount = 0;
+        persist();
+      })();
+    }
+    return rebuildPromise;
+  };
+  if (resumedCount) {
+    report();
+    if (typeof settings.onResume === "function") {
+      settings.onResume({ doneParts: resumedCount, totalParts });
+    }
+  }
+  persist();
+
   let nextIndex = 1;
   const worker = async () => {
     for (;;) {
       const index = nextIndex;
       nextIndex += 1;
       if (index > totalParts) return;
+      if (signal && signal.aborted) throw new ApiError("上传已取消", 0, url);
+      if (parts[index - 1]) continue; // 已经传过的分片直接跳过
+
       const start = (index - 1) * partSize;
       const chunk = file.slice(start, Math.min(start + partSize, file.size));
       const partUrl = `${url}?uploadId=${encodeURIComponent(uploadId)}&partNumber=${index}`;
-      const result = await xhrRequest("PUT", partUrl, chunk, {
-        onUploadProgress: (progress) => {
-          loadedByPart[index] = progress.loaded;
-          report();
-        },
-      });
-      ensureOk(result, partUrl);
-      let etag = result.getHeader("etag") || result.getHeader("ETag") || "";
-      if (!etag) {
+
+      let lastError = null;
+      for (let attempt = 1; attempt <= MULTIPART_PART_RETRIES; attempt++) {
         try {
-          const data = JSON.parse(result.responseText || "{}");
-          etag = (data && data.etag) || "";
+          const result = await xhrRequest("PUT", partUrl, chunk, {
+            signal,
+            onUploadProgress: (progress) => {
+              loadedByPart[index] = progress.loaded;
+              report();
+            },
+          });
+          ensureOk(result, partUrl);
+          let etag = result.getHeader("etag") || result.getHeader("ETag") || "";
+          if (!etag) {
+            try {
+              const data = JSON.parse(result.responseText || "{}");
+              etag = (data && data.etag) || "";
+            } catch (error) {
+              etag = "";
+            }
+          }
+          if (!etag) throw new ApiError("分片响应缺少 etag", result.status, partUrl);
+          loadedByPart[index] = chunk.size;
+          parts[index - 1] = { partNumber: index, etag: String(etag) };
+          report();
+          persist(); // 每传完一片就记进度，中断后能接着传
+          lastError = null;
+          break;
         } catch (error) {
-          etag = "";
+          lastError = error;
+          loadedByPart[index] = 0;
+          report();
+          // 任务失效（被清理/过期）：重建一个再重试，别让用户从零再来
+          const status = error && error.status;
+          if ((status === 400 || status === 404) && !rebuildPromise) {
+            try {
+              await rebuildTask();
+              continue;
+            } catch (rebuildError) {
+              lastError = rebuildError;
+            }
+          }
+          if (attempt < MULTIPART_PART_RETRIES) {
+            await delay(1000 * Math.pow(2, attempt - 1)); // 1s → 2s → 4s
+          }
         }
       }
-      if (!etag) throw new ApiError("分片响应缺少 etag", result.status, partUrl);
-      loadedByPart[index] = chunk.size;
-      report();
-      parts[index - 1] = { partNumber: index, etag: String(etag) };
+      if (lastError) throw lastError;
     }
   };
 
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  try {
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
-  const completeUrl = `${url}?uploadId=${encodeURIComponent(uploadId)}`;
-  const completeResult = await xhrRequest("POST", completeUrl, JSON.stringify({ parts }), {
-    headers: { "content-type": "application/json" },
-  });
-  ensureOk(completeResult, completeUrl);
-  if (onProgress) onProgress({ loaded: file.size, total: file.size });
-  return { uploadId, parts };
+    const completeUrl = `${url}?uploadId=${encodeURIComponent(uploadId)}`;
+    const completeResult = await xhrRequest(
+      "POST",
+      completeUrl,
+      JSON.stringify({ parts: parts.filter(Boolean) }),
+      { headers: { "content-type": "application/json" } }
+    );
+    ensureOk(completeResult, completeUrl);
+    dropUploadSession(key, file);
+    if (onProgress) onProgress({ loaded: file.size, total: file.size });
+    return { uploadId, parts, resumed: resumedCount > 0 };
+  } catch (error) {
+    if (signal && signal.aborted) {
+      // 用户主动取消：清掉本地进度（调用方会同时放弃服务端分片任务）
+      dropUploadSession(key, file);
+      throw error;
+    }
+    // 其它失败（网络中断等）**保留**进度记录，下次选同一个文件可以接着传
+    persist();
+    throw error;
+  }
 }
 
 /**

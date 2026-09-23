@@ -439,6 +439,25 @@ GET /api/search?q=关键词&prefix=&limit=200
 - 网页端刻意做成**点按钮才搜**：慢网络里每次请求 1~2 秒，
   输入时自动全局搜索会把体验拖垮，所以输入只做当前目录的即时过滤。
 
+### 分片上传与断点续传
+
+```
+POST   /webdav/{key}?uploads                      → { key, uploadId }
+PUT    /webdav/{key}?uploadId=..&partNumber=N     → 204/200 + ETag
+POST   /webdav/{key}?uploadId=..  {parts:[{partNumber,etag}]}   → 完成
+DELETE /webdav/{key}?uploadId=..                  → 204（放弃任务）
+```
+
+- **分片不得小于 5MB**（R2/S3 规则，最后一片除外），否则完成时报
+  `Your proposed upload is smaller than the minimum allowed object size`。
+  网页端默认 25MB 一片，并对传参做了 ≥5MB 兜底。
+- `DELETE ?uploadId=` 只放弃分片任务，**不删除同名对象**；任务不存在也返回 `204`（幂等）。
+  没传完的分片在 R2 里是占空间的，所以取消上传时应当调用它。
+- **续传由客户端负责**：R2 的 Workers binding 没有 ListParts/ListMultipartUploads，
+  所以网页端把 `uploadId` 与已传分片（含 ETag）记在本机 localStorage（按
+  「路径+大小+修改时间」认领，最多留 7 天），重试时复用任务、只补缺失分片。
+  若任务已被清理，分片请求会报 400/404，客户端会自动重建任务从零重传。
+
 ### 预览 token（`/api/whoami` 下发，`/raw?pt=` 使用）
 
 登录后 `/api/whoami` 会多返回两个字段：

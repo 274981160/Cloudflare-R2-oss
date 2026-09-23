@@ -9,10 +9,24 @@ import { DavContext } from "./context";
  * 也不会因为目录很大而中途失败。
  */
 export async function handleRequestDelete(context: DavContext): Promise<Response> {
-  const { bucket, path, env, subject } = context;
+  const { bucket, path, env, subject, request } = context;
 
   if (!path) {
     return new Response("不允许删除根目录", { status: 403 });
+  }
+
+  // `DELETE ?uploadId=` 是「放弃分片上传」（S3 语义的 AbortMultipartUpload）：
+  // 不删对象，只把没传完的分片任务取消掉，免得留下垃圾分片一直占空间
+  const uploadId = new URL(request.url).searchParams.get("uploadId");
+  if (uploadId) {
+    try {
+      const upload = bucket.resumeMultipartUpload(path, uploadId);
+      await upload.abort();
+      return new Response(null, { status: 204 });
+    } catch (error) {
+      // 任务已经不存在/已完成：按幂等处理
+      return new Response(null, { status: 204 });
+    }
   }
 
   try {

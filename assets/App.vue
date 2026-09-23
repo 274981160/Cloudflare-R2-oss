@@ -13,6 +13,14 @@
     <div v-if="uploadStatus" class="upload-status">
       <span class="upload-status-text" v-text="uploadStatus"></span>
       <span v-text="uploadProgress === null ? '' : `${uploadProgress}%`"></span>
+      <button
+        v-if="uploading"
+        type="button"
+        class="upload-cancel"
+        @click="cancelUpload"
+      >
+        <span>取消</span>
+      </button>
     </div>
     <progress v-if="uploadProgress !== null" :value="uploadProgress" max="100"></progress>
 
@@ -516,6 +524,8 @@ import {
   rawUrl,
   removeKey,
   searchFiles,
+  abortUpload,
+  pendingUploadInfo,
   setPreviewToken,
   setUnauthorizedHandler,
   stripExtension,
@@ -1444,6 +1454,34 @@ export default {
       this.selectedKeys = [item.key];
     },
 
+    /**
+     * 取消进行中的上传。
+     * 会中断当前请求、停止队列，并**放弃服务端的分片任务**——
+     * 没传完的分片在 R2 里一直占空间（会计费），不清掉就是垃圾。
+     * 网络中断那种「被动失败」不会走到这里，那种情况进度会保留、可以续传。
+     */
+    async cancelUpload() {
+      if (!this.uploading) return;
+      this._uploadCancelled = true;
+      if (this._uploadAbort) {
+        try {
+          this._uploadAbort.abort();
+        } catch (error) {
+          /* 忽略 */
+        }
+      }
+      const task = this._uploadCurrentTask;
+      if (task) {
+        await abortUpload(
+          joinKey(task.basedir, task.name || task.file.name),
+          task.file
+        ).catch(() => {});
+      }
+      this.uploadQueue.length = 0;
+      this.uploadDirQueue.length = 0;
+      this.showNotice("已取消上传（已传分片已清理）", "info");
+    },
+
     /** 回收站里恢复/删除后刷新列表 */
     async onTrashChanged() {
       await this.fetchFiles();
@@ -1874,6 +1912,7 @@ export default {
         return;
       }
       this.uploading = true;
+      this._uploadCancelled = false;
       let aborted = false;
       let createdDirs = 0;
       /** 本次上传的压缩包，传完后可以问一句「要解压吗」（手机选不了文件夹，这条路最实用） */
@@ -1884,19 +1923,47 @@ export default {
           const task = this.uploadQueue.shift();
           const file = task.file;
           const key = joinKey(task.basedir, task.name || file.name);
+          this._uploadCurrentTask = task;
+          // 取消上传靠它中断正在传的分片
+          const controller =
+            typeof AbortController === "function" ? new AbortController() : null;
+          this._uploadAbort = controller;
           this.uploadStatus = `正在上传（${this.uploadFinishedCount + 1}/${this.uploadTotalCount}）：${this.uploadDisplayPath(key)}`;
           this.uploadProgress = 0;
+          // 有上次没传完的进度就先说一声（慢网络里这可能省下几十分钟）
+          const pending = pendingUploadInfo(key, file);
+          if (pending && pending.totalParts) {
+            const percent = Math.round((pending.doneParts / pending.totalParts) * 100);
+            this.showNotice(
+              `继续上次未完成的上传：${this.uploadDisplayPath(key)}（已完成 ${percent}%）`,
+              "info"
+            );
+          }
           try {
             await uploadWithThumbnail(key, file, {
+              signal: controller ? controller.signal : undefined,
               onUploadProgress: (progress) => {
                 this.uploadProgress = progress.total
                   ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
                   : 0;
               },
+              onResume: (info) => {
+                this.uploadStatus = `续传中（已完成 ${info.doneParts}/${info.totalParts} 片）：${this.uploadDisplayPath(key)}`;
+              },
             });
           } catch (error) {
+            if (this._uploadCancelled) {
+              this.uploadFinishedCount++;
+              aborted = true;
+              break;
+            }
             console.error("上传失败", key, error);
-            this.uploadErrors.push(`${this.uploadDisplayPath(key)}：${errorMessage(error)}`);
+            const resumable = pendingUploadInfo(key, file);
+            this.uploadErrors.push(
+              resumable
+                ? `${this.uploadDisplayPath(key)}：${errorMessage(error)}（进度已保存，重新选择同一个文件即可续传）`
+                : `${this.uploadDisplayPath(key)}：${errorMessage(error)}`
+            );
             if (error instanceof ApiError && error.status === 401) {
               this.uploadFinishedCount++;
               aborted = true;
@@ -2487,6 +2554,17 @@ export default {
 }
 
 /* 搜索提示行 / 全局搜索入口 */
+.upload-cancel {
+  margin-left: 8px;
+  min-height: 28px;
+  padding: 2px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background-color: white;
+  color: #b00020;
+  font-size: 0.9em;
+}
+
 .search-bar {
   display: flex;
   flex-wrap: wrap;

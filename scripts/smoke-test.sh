@@ -325,6 +325,25 @@ check "预检空 keys 400" 400 "$(acode -X POST -H 'Content-Type: application/js
 check "预检非 JSON 400" 400 "$(acode -X POST -H 'Content-Type: application/json' -d 'nope' "$BASE/api/exists")"
 check "匿名预检 401" 401 "$(code -X POST -H 'Content-Type: application/json' -d '{"keys":["_smoke/a.txt"]}' "$BASE/api/exists")"
 
+section "13.9 预览直链：流式与 Range（大图/视频不用等整包）"
+check "建 Range 测试文件 201" 201 "$(acode -X PUT --data '0123456789abcdefghijklmnopqrstuvwxyz' "$W/range.bin")"
+check "签名接口 200" 200 "$(acode "$BASE/api/sign?key=_smoke/range.bin")"
+SIGNURL="$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_smoke/range.bin" | python3 -c "
+import json,sys
+print(json.load(sys.stdin)['url'])" 2>/dev/null)"
+atleast "签名直链可匿名访问（预览要靠它）" 1 "$([ "$(code "$BASE$SIGNURL")" = "200" ] && echo 1 || echo 0)"
+check "直链支持 Range（视频拖进度）206" 206 "$(code -H 'Range: bytes=0-3' "$BASE$SIGNURL")"
+check "Range 响应带 Content-Range" 1 "$(curl -s -D- -o /dev/null -H 'Range: bytes=0-3' "$BASE$SIGNURL" | grep -ci 'content-range: bytes 0-3/')"
+check "整文件响应声明 Accept-Ranges" 1 "$(curl -s -D- -o /dev/null "$BASE$SIGNURL" | grep -ci 'accept-ranges: bytes')"
+check "过短 ttl 被抬到 ≥60 秒" 1 "$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_smoke/range.bin&ttl=1" | python3 -c "
+import json,sys,time,urllib.parse as up
+q=up.parse_qs(up.urlparse(json.load(sys.stdin)['url']).query)
+print(1 if int(q['exp'][0]) - int(time.time()) >= 55 else 0)")"
+check "超长 ttl 被夹到 ≤1 小时" 1 "$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_smoke/range.bin&ttl=999999" | python3 -c "
+import json,sys,time,urllib.parse as up
+q=up.parse_qs(up.urlparse(json.load(sys.stdin)['url']).query)
+print(1 if int(q['exp'][0]) - int(time.time()) <= 3700 else 0)")"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

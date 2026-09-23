@@ -725,8 +725,15 @@ export function fetchBlobWithProgress(url, options) {
  * （有进度条、立刻弹保存框，也不会被浏览器在异步之后拦掉）。
  * 服务端没配签名密钥时返回 null，调用方应退回「取回 Blob」的方式。
  */
-export async function signedDownloadUrl(key) {
-  const url = `/api/sign?key=${encodeURIComponent(String(key == null ? "" : key))}`;
+/**
+ * 取一条短时效签名直链（浏览器可以原生流式加载：支持 Range、可拖动进度）。
+ * @param {string} key 对象路径
+ * @param {number} [ttlSeconds] 有效期（秒）；服务端会夹到 60..3600
+ */
+export async function signedDownloadUrl(key, ttlSeconds) {
+  let url = `/api/sign?key=${encodeURIComponent(String(key == null ? "" : key))}`;
+  const ttl = Number(ttlSeconds);
+  if (Number.isFinite(ttl) && ttl > 0) url += `&ttl=${Math.floor(ttl)}`;
   const data = await apiFetchJson(url, { cache: "no-store" });
   return data && typeof data.url === "string" && data.url ? data.url : null;
 }

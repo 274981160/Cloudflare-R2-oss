@@ -100,6 +100,7 @@
               :alt="displayName"
               @dblclick="toggleZoom"
               @wheel.prevent="onWheel"
+              @error="onMediaError"
             />
             <video
               v-else-if="kind === 'video'"
@@ -107,8 +108,15 @@
               :src="objectUrl"
               controls
               playsinline
+              @error="onMediaError"
             ></video>
-            <audio v-else-if="kind === 'audio'" class="preview-audio" :src="objectUrl" controls></audio>
+            <audio
+              v-else-if="kind === 'audio'"
+              class="preview-audio"
+              :src="objectUrl"
+              controls
+              @error="onMediaError"
+            ></audio>
             <iframe
               v-else-if="kind === 'pdf'"
               class="preview-frame"
@@ -146,6 +154,7 @@ import {
   isImageFile,
   previewKind,
   rawUrl,
+  signedDownloadUrl,
   saveBlob,
 } from "/assets/main.mjs";
 
@@ -190,6 +199,12 @@ function extensionOf(name) {
  * 因为 /raw/{key} 默认需要认证，新标签页带不上认证头，所以统一在这里
  * 用 apiFetch 取回 Blob → URL.createObjectURL → 按类型渲染。
  */
+/**
+ * 预览用的签名有效期（秒）。服务端上限 1 小时；
+ * 视频播放期间会持续发 Range 请求，太短会在播放中途 401。
+ */
+const PREVIEW_SIGN_TTL = 3600;
+
 export default {
   props: {
     modelValue: Boolean,
@@ -211,6 +226,8 @@ export default {
     loadError: "",
     objectUrl: "",
     blob: null,
+    /** 当前地址是不是「签名直链流式加载」（而不是整包下载出来的 blob） */
+    streamed: false,
     kind: null,
     /** 服务端 / 猜测得到的最终 MIME */
     contentType: "",
@@ -411,7 +428,8 @@ export default {
     /** 释放当前 Blob 与对象 URL（预览的 Blob 可能很大，不留在会话里） */
     release() {
       this._token = (this._token || 0) + 1;
-      if (this.objectUrl) {
+      // 只有 blob: 地址需要回收；签名直链是普通 URL，交给浏览器缓存管理
+      if (this.objectUrl && this.objectUrl.startsWith("blob:")) {
         try {
           URL.revokeObjectURL(this.objectUrl);
         } catch (error) {
@@ -420,6 +438,7 @@ export default {
       }
       this.objectUrl = "";
       this.blob = null;
+      this.streamed = false;
       this.kind = null;
       this.contentType = "";
       this.zoom = 1;
@@ -448,6 +467,71 @@ export default {
       this.statusError = !!isError;
     },
 
+    /* ---------------- 类型判断与流式加载 ---------------- */
+
+    /**
+     * 不下载就猜出 MIME：优先列表项自带的 contentType，
+     * 类型不可靠（octet-stream）时按扩展名兜底。
+     */
+    guessType() {
+      const fromItem = String((this.item && this.item.contentType) || "")
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+      if (fromItem && GENERIC_TYPES.indexOf(fromItem) === -1) return fromItem;
+      return MIME_BY_EXTENSION[extensionOf(this.displayName)] || fromItem || "";
+    },
+
+    /**
+     * 用签名直链流式加载。成功返回 true；签名拿不到就返回 false，
+     * 由调用方回退到「整包取回」的老路径（例如拿不到签名的场景）。
+     */
+    async loadStreamed(key, type, kind, token) {
+      let signed = "";
+      try {
+        signed = (await signedDownloadUrl(key, PREVIEW_SIGN_TTL)) || "";
+      } catch (error) {
+        return false;
+      }
+      if (token !== this._token) return true;
+      if (!signed) return false;
+
+      this.contentType = type;
+      this.kind = kind;
+      this.objectUrl = signed;
+      this.streamed = true;
+      this.loading = false;
+      this.loadError = "";
+      return true;
+    },
+
+    /** 流式地址加载失败（签名过期等）：回退到整包取回一次 */
+    async onMediaError() {
+      if (!this.streamed || this._streamFallback) return;
+      this._streamFallback = true;
+      const key = this.itemKey;
+      const type = this.contentType;
+      const kind = this.kind;
+      this.release();
+      this.loading = true;
+      try {
+        const url = rawUrl(key);
+        const response = await apiFetch(url, { cache: "no-store" });
+        if (!response.ok) {
+          throw new ApiError(await describeResponseError(response), response.status, url);
+        }
+        const blob = await response.blob();
+        this.blob = blob;
+        this.contentType = blob.type || type;
+        this.kind = kind || previewKind(this.contentType);
+        this.objectUrl = URL.createObjectURL(blob);
+        this.loading = false;
+      } catch (error) {
+        this.loadError = errorMessage(error);
+        this.loading = false;
+      }
+    },
+
     /* ---------------- 取回内容 ---------------- */
 
     async load() {
@@ -459,6 +543,17 @@ export default {
       }
       const token = (this._token = (this._token || 0) + 1);
       this.loading = true;
+
+      // 先用列表里已有的类型信息判断能否流式预览（不下载就能判断）。
+      // 图片/视频/音频/PDF 走签名直链：浏览器原生流式加载、支持 Range，
+      // 几十 MB 的图/视频不用等整包下完，视频还能直接拖进度。
+      const guessedType = this.guessType();
+      const guessedKind = previewKind(guessedType);
+      if (guessedKind) {
+        const streamed = await this.loadStreamed(key, guessedType, guessedKind, token);
+        if (streamed) return;
+      }
+
       try {
         const url = rawUrl(key);
         const response = await apiFetch(url, { cache: "no-store" });

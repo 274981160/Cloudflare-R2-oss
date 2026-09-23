@@ -221,6 +221,18 @@ check "旧内容确实找回了" "old-secret" "$(curl -s -u "$ADMIN" "$W/overwri
 check "清理覆盖测试文件 204" 204 "$(acode -X DELETE "$W/overwrite-secret.txt")"
 check "清理恢复出来的文件 204" 204 "$(acode -X DELETE "$W/overwrite-secret.txt%20(%E6%81%A2%E5%A4%8D)")"
 
+section "8.9 预览签名（私有模式下不能靠伪造签名绕过）"
+check "无签名直链 401" 401 "$(code "$BASE/raw/_sec/a.txt")"
+check "伪造签名 401" 401 "$(code "$BASE/raw/_sec/a.txt?exp=9999999999&sig=deadbeef")"
+check "签名参数不全会 401" 401 "$(code "$BASE/raw/_sec/a.txt?exp=9999999999")"
+check "真签名可匿名读 200" 200 "$(SIGNURL="$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_sec/a.txt" | python3 -c "
+import json,sys
+print(json.load(sys.stdin)['url'])" 2>/dev/null)"; code "$BASE$SIGNURL")"
+check "签名只对签的那个 key 有效" 401 "$(SIGNURL="$(curl -s -u "$ADMIN" "$BASE/api/sign?key=_sec/a.txt" | python3 -c "
+import json,sys
+print(json.load(sys.stdin)['url'])" 2>/dev/null)"; code "$BASE/raw/_sec/sub/b.txt?${SIGNURL#*?}")"
+check "过期签名 401" 401 "$(code "$BASE/raw/_sec/a.txt?exp=1000000000&sig=deadbeef")"
+
 section "9. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"

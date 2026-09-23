@@ -124,6 +124,7 @@
           @dblclick.stop="openItem(file)"
           @keydown.enter.prevent="onRowEnter($event, file)"
           @contextmenu.prevent="openContextMenu(file)"
+          :data-thumb="thumbDigestOf(file)"
         >
           <span v-if="selectionMode" class="file-check" aria-hidden="true">
             <svg viewBox="0 0 448 512" width="12" height="12">
@@ -621,6 +622,15 @@ export default {
   },
 
   watch: {
+    // 列表内容或视图变化后，重新为新出现的行安排按需加载
+    visibleFiles() {
+      this.observeThumbnails();
+    },
+
+    view() {
+      this.observeThumbnails();
+    },
+
     focusedItem(item) {
       this.prefetchSignedUrl(item);
     },
@@ -659,11 +669,27 @@ export default {
       }
     };
     document.addEventListener("click", this._onCaptureClick, true);
+
+    this._thumbsLoading = new Set();
+    if (typeof IntersectionObserver === "function") {
+      this._thumbObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const digest = entry.target.getAttribute("data-thumb");
+            this._thumbObserver.unobserve(entry.target);
+            void this.loadOneThumbnail(digest);
+          }
+        },
+        { rootMargin: "200px 0px" }
+      );
+    }
   },
 
   beforeUnmount() {
     window.removeEventListener("popstate", this._onPopState);
     document.removeEventListener("click", this._onCaptureClick, true);
+    if (this._thumbObserver) this._thumbObserver.disconnect();
     setUnauthorizedHandler(null);
     if (this._noticeTimer) clearTimeout(this._noticeTimer);
     this.cancelLongPress();
@@ -744,7 +770,8 @@ export default {
         this.folders = listing.folders;
         this.dirCanWrite = listing.canWrite && !listing.notFound;
         if (listing.notFound && this.cwd) this.readError = "目录不存在或已被删除";
-        this.ensureThumbnails(listing.files);
+        // 缩略图改为「进入视口才加载」（见 observeThumbnails）
+        this.observeThumbnails();
       } catch (error) {
         this.files = [];
         this.folders = [];
@@ -944,6 +971,51 @@ export default {
      * 缓存由 main.mjs 维护（同一摘要只请求一次，失败也记住），这里只负责把
      * 结果落到响应式数据上；取不到就留空串，MimeIcon 会自动回退到 MIME 图标。
      */
+    /** 该项的缩略图摘要（没有则空串），写进 data-thumb 供观察器读取 */
+    thumbDigestOf(item) {
+      return thumbnailDigest(item && item.thumbnail) || "";
+    },
+
+    /**
+     * 只给「进入视口」的行加载缩略图。
+     *
+     * 原来进目录会把该目录所有文件的缩略图一次性并发拉下来：照片多的目录
+     * 在手机上又慢又费流量。现在用 IntersectionObserver 按需加载，
+     * 并保留 200px 的提前量，滚动时不会看到明显空白。
+     * 不支持 IntersectionObserver 的环境退回原来的「全部加载」。
+     */
+    observeThumbnails() {
+      if (!this._thumbObserver) {
+        void this.ensureThumbnails(this.visibleFiles);
+        return;
+      }
+      this.$nextTick(() => {
+        const nodes = this.$el ? this.$el.querySelectorAll("[data-thumb]") : [];
+        for (const node of nodes) {
+          const digest = node.getAttribute("data-thumb");
+          if (!digest) continue;
+          if (this.thumbnailUrls[digest] !== undefined) continue;
+          this._thumbObserver.observe(node);
+        }
+      });
+    },
+
+    /** 加载单个缩略图（同一摘要不会重复请求） */
+    async loadOneThumbnail(digest) {
+      if (!digest) return;
+      if (this.thumbnailUrls[digest] !== undefined) return;
+      if (this._thumbsLoading.has(digest)) return;
+      this._thumbsLoading.add(digest);
+      try {
+        const url = await loadThumbnail(digest);
+        this.thumbnailUrls = Object.assign({}, this.thumbnailUrls, {
+          [digest]: url || "",
+        });
+      } finally {
+        this._thumbsLoading.delete(digest);
+      }
+    },
+
     async ensureThumbnails(files) {
       const pending = [];
       for (const file of files || []) {

@@ -481,6 +481,7 @@ import {
   putThumbnailAs,
   rawUrl,
   removeKey,
+  setPreviewToken,
   setUnauthorizedHandler,
   stripExtension,
   thumbnailDigest,
@@ -828,6 +829,8 @@ export default {
       try {
         const profile = await fetchWhoami();
         this.profile = profile;
+        // 预览直链要用它（只读、12 小时），拿不到就退回短时效签名
+        setPreviewToken(profile.previewToken || "", profile.publicRead === true);
         if (!profile.authenticated && !profile.publicRead) this.showLoginDialog = true;
         return profile;
       } catch (error) {
@@ -902,6 +905,7 @@ export default {
     /* ---------------- 认证 ---------------- */
 
     onUnauthorized() {
+      setPreviewToken("", false);
       this.profile = {
         authenticated: false,
         username: null,
@@ -915,6 +919,7 @@ export default {
 
     async onLoginSuccess(profile) {
       this.profile = profile;
+      setPreviewToken(profile.previewToken || "", profile.publicRead === true);
       this.showLoginDialog = false;
       this.showNotice(`已登录：${profile.username || ""}`, "success");
       await this.fetchFiles();

@@ -99,3 +99,65 @@ export async function verifySignedKey(
   const expected = await hmacHex(secret, `${key}\n${expires}`);
   return constantTimeEqualHex(expected, sig.trim().toLowerCase());
 }
+
+/* ------------------------------------------------------------------ *
+ * 预览用只读 token
+ *
+ * 背景：私有模式下 <img>/<video> 带不上认证头，所以直链必须自带凭据。
+ * 一开始的做法是「每次预览先请求一次 /api/sign」——在延迟高的网络里
+ * 这一次往返就是 1~2 秒（实测线上 /api/sign 约 1.3s），图片因此比原来
+ * 「整包取回」还慢，视频每个 Range 请求也白付一次。
+ *
+ * 改成：登录时（/api/whoami）签发一个**只读** token，前端直接拼进直链，
+ * 零额外往返。token 只对 /raw 的 GET/HEAD 生效，不能写、不能列目录，
+ * 到期自动失效；改账号配置（密钥派生自账号环境变量）即全部失效。
+ * ------------------------------------------------------------------ */
+
+/** 预览 token 默认有效期：12 小时（够一个使用时段，又不会长期有效） */
+export const DEFAULT_PREVIEW_TTL = 12 * 60 * 60;
+
+export interface PreviewToken {
+  token: string;
+  exp: number;
+}
+
+export async function signPreviewToken(
+  env: Env,
+  account: string,
+  ttlSeconds: number = DEFAULT_PREVIEW_TTL
+): Promise<PreviewToken | null> {
+  const name = String(account || "").trim();
+  if (!name) return null;
+  const secret = await downloadSecret(env);
+  if (!secret) return null;
+  const exp = Math.floor(Date.now() / 1000) + Math.max(60, ttlSeconds);
+  const sig = await hmacHex(secret, `preview\n${name}\n${exp}`);
+  return { token: `${encodeURIComponent(name)}.${exp}.${sig}`, exp };
+}
+
+/** 校验预览 token；返回它代表的账号名 */
+export async function verifyPreviewToken(
+  env: Env,
+  token: string | null
+): Promise<{ account: string; exp: number } | null> {
+  const raw = String(token || "").trim();
+  const parts = raw.split(".");
+  if (parts.length !== 3) return null;
+
+  let account = "";
+  try {
+    account = decodeURIComponent(parts[0]);
+  } catch (error) {
+    return null;
+  }
+  const exp = parseInt(parts[1], 10);
+  const sig = parts[2];
+  if (!account || !Number.isFinite(exp)) return null;
+  if (exp <= Math.floor(Date.now() / 1000)) return null;
+
+  const secret = await downloadSecret(env);
+  if (!secret) return null;
+  const expected = await hmacHex(secret, `preview\n${account}\n${exp}`);
+  if (!constantTimeEqualHex(expected, sig.trim().toLowerCase())) return null;
+  return { account, exp };
+}

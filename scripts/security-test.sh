@@ -233,6 +233,27 @@ import json,sys
 print(json.load(sys.stdin)['url'])" 2>/dev/null)"; code "$BASE/raw/_sec/sub/b.txt?${SIGNURL#*?}")"
 check "过期签名 401" 401 "$(code "$BASE/raw/_sec/a.txt?exp=1000000000&sig=deadbeef")"
 
+section "8.10 预览 token：只读、只对 /raw、不能越权"
+PT="$(curl -s -u "$ADMIN" "$BASE/api/whoami" | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('previewToken') or '')" 2>/dev/null)"
+PT1="$(curl -s -u "$USER1" "$BASE/api/whoami" | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('previewToken') or '')" 2>/dev/null)"
+atleast "管理员有预览 token" 1 "$(printf '%s' "$PT" | grep -c .)"
+check "有效 token 可匿名读直链" 200 "$(code "$BASE/raw/_sec/a.txt?pt=$PT")"
+check "匿名无 token 仍 401" 401 "$(code "$BASE/raw/_sec/a.txt")"
+check "篡改账号名 401" 401 "$(code "$BASE/raw/_sec/a.txt?pt=user2.$(printf '%s' "$PT" | cut -d. -f2,3)")"
+check "伪造签名 401" 401 "$(code "$BASE/raw/_sec/a.txt?pt=admin.$(printf '%s' "$PT" | cut -d. -f2).deadbeef")"
+check "过期 token 401" 401 "$(code "$BASE/raw/_sec/a.txt?pt=admin.1000000000.$(printf '%s' "$PT" | cut -d. -f3)")"
+check "受限账号的 token 读不了别人的文件" 401 "$(code "$BASE/raw/_sec/a.txt?pt=$PT1")"
+check "受限账号的 token 能读自己的文件" 200 "$(code "$BASE/raw/user1/mine.txt?pt=$PT1")"
+check "token 不能当认证头列目录 401" 401 "$(code -H "Authorization: Bearer $PT" "$BASE/api/list/_sec")"
+check "token 不能当认证头写文件 401" 401 "$(code -H "Authorization: Bearer $PT" -X PUT --data 'x' "$BASE/webdav/_sec/evil.txt")"
+check "?pt 对非 /raw 接口无效 401" 401 "$(code "$BASE/api/list/_sec?pt=$PT")"
+check "?pt 对 webdav 无效 401" 401 "$(code "$BASE/webdav/_sec/a.txt?pt=$PT")"
+check "清理越权测试残留 404" 404 "$(acode "$BASE/raw/_sec/evil.txt")"
+
 section "9. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"

@@ -410,6 +410,24 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
   不会新增），所以「给已有分享改成 7 天」或「改回永久」都会生效。
 - 到期后 `/s/{token}` 一律 404。
 
+### 预览 token（`/api/whoami` 下发，`/raw?pt=` 使用）
+
+登录后 `/api/whoami` 会多返回两个字段：
+
+```json
+{ "previewToken": "admin.1790220122.4909fd…", "previewTokenExp": 1790220122 }
+```
+
+前端把它拼进预览直链：`/raw/{key}?pt=<previewToken>`，于是预览图片/视频
+**不需要再请求一次 `/api/sign`**——在慢网络里每次往返 1~2 秒，省下的就是首屏时间。
+
+- 只读、只对 `/raw` 的 GET/HEAD 生效；当认证头用或用在 `/api/*`、`/webdav` 上一律 `401`。
+- 权限等同该账号的读权限：受限账号的 token 读别人的文件也是 `401`。
+- 篡改账号名 / 伪造签名 / 过期一律 `401`；有效期 12 小时。
+- `/raw` 对普通对象返回 `Cache-Control: private, max-age=300`（只允许浏览器私有缓存，
+  绝不允许 CDN 共享缓存），所以反复看同一张图 / 同一个视频不会重复下载。
+  缩略图仍是 `max-age=31536000`。
+
 ### `GET /api/sign?key={key}&ttl={秒}` — 短时效签名直链
 
 网页端预览图片/视频/音频/PDF 就用它：把返回的 `/raw/...?exp=&sig=` 直接交给

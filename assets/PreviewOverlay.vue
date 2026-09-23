@@ -153,6 +153,7 @@ import {
   formatSize,
   isImageFile,
   previewKind,
+  previewUrl,
   rawUrl,
   signedDownloadUrl,
   saveBlob,
@@ -550,6 +551,19 @@ export default {
       const guessedType = this.guessType();
       const guessedKind = previewKind(guessedType);
       if (guessedKind) {
+        // 首选：登录时下发的预览 token 直接拼进直链 → **零额外请求**
+        // （每次请求的固定开销在慢网络里高达 1~2 秒，能省一次是一次）
+        const direct = previewUrl(key);
+        if (direct) {
+          this.contentType = guessedType;
+          this.kind = guessedKind;
+          this.objectUrl = direct;
+          this.streamed = true;
+          this.loading = false;
+          this.loadError = "";
+          return;
+        }
+        // 没有 token（匿名只读等）：退回短时效签名，再不行走整包取回
         const streamed = await this.loadStreamed(key, guessedType, guessedKind, token);
         if (streamed) return;
       }

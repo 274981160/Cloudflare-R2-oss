@@ -133,6 +133,11 @@ export function baseObjectHeaders(stat: PathStat, key: string): Headers {
     headers.set("Cache-Control", stat.cacheControl || THUMBNAIL_CACHE_CONTROL);
   } else if (stat.cacheControl) {
     headers.set("Cache-Control", stat.cacheControl);
+  } else {
+    // 私有内容允许**浏览器私有缓存**：反复预览同一张图 / 拖动同一个视频
+    // 时不用重下（高延迟网络下差别很大）。
+    // private = 只允许浏览器自己缓存，绝不允许 CDN/共享缓存，避免内容外泄。
+    headers.set("Cache-Control", "private, max-age=300");
   }
   return headers;
 }

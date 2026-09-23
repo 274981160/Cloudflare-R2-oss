@@ -1,7 +1,9 @@
 import { Env, THUMBNAILS_PREFIX } from "../../utils/config";
 import {
   authenticate,
+  buildSubject,
   canRead,
+  parseAccounts,
   forbidden,
   isInternalPath,
   unauthorized,
@@ -9,7 +11,7 @@ import {
 } from "../../utils/auth";
 import { notFound, parseBucketPath, serverError } from "../../utils/bucket";
 import { isThumbnailKey, statPath } from "../../utils/core";
-import { verifySignedKey } from "../../utils/signing";
+import { verifyPreviewToken, verifySignedKey } from "../../utils/signing";
 import { serveObject } from "../../utils/serve";
 
 /**
@@ -37,8 +39,11 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
       env,
     };
 
-    // 允许两种放行方式：正常权限，或一张针对该 key 的短时效签名
-    // （签名直链用于让浏览器原生下载，避免私有模式下前端先取回整文件再存）
+    // 三种放行方式：
+    // 1) 正常权限（浏览器能带上认证头时）
+    // 2) 针对该 key 的短时效签名（下载 / 复制链接用）
+    // 3) 预览 token（?pt=，登录时签发、只读、只对 /raw 生效）
+    //    预览走它就不必每次先请求 /api/sign——高延迟网络下那一次往返很贵
     const signedOk = await verifySignedKey(
       env,
       path,
@@ -46,7 +51,22 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
       url.searchParams.get("sig")
     );
 
-    if (!signedOk && !canRead(subject, path)) {
+    let previewOk = false;
+    const previewToken = url.searchParams.get("pt");
+    if (!signedOk && previewToken) {
+      const verified = await verifyPreviewToken(env, previewToken);
+      if (verified) {
+        const account =
+          parseAccounts(env).find(
+            (item) => item.username === verified.account
+          ) || null;
+        if (account) {
+          previewOk = canRead(buildSubject(env, account, false), path);
+        }
+      }
+    }
+
+    if (!signedOk && !previewOk && !canRead(subject, path)) {
       return auth.invalid
         ? unauthorized("用户名或密码不正确")
         : auth.anonymous

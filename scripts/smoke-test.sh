@@ -344,6 +344,16 @@ import json,sys,time,urllib.parse as up
 q=up.parse_qs(up.urlparse(json.load(sys.stdin)['url']).query)
 print(1 if int(q['exp'][0]) - int(time.time()) <= 3700 else 0)")"
 
+section "13.10 预览 token 与浏览器缓存（省掉每次签名的往返）"
+atleast "whoami 下发预览 token" 1 "$(curl -s -u "$ADMIN" "$BASE/api/whoami" | grep -c 'previewToken":"')"
+PT="$(curl -s -u "$ADMIN" "$BASE/api/whoami" | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('previewToken') or '')" 2>/dev/null)"
+check "预览 token 可直接读直链（无需再签名）" 200 "$(code "$BASE/raw/_smoke/range.bin?pt=$PT")"
+check "预览 token 支持 Range" 206 "$(code -H 'Range: bytes=0-3' "$BASE/raw/_smoke/range.bin?pt=$PT")"
+check "普通文件响应带私有缓存头（浏览器可缓存）" 1 "$(curl -s -D- -o /dev/null "$BASE/raw/_smoke/range.bin?pt=$PT" | grep -ci 'cache-control: private, max-age=')"
+check "缩略图仍是长缓存" 1 "$(curl -s -D- -o /dev/null "$BASE/raw/_%24flaredrive%24/thumbnails/0000000000000000000000000000000000000001.png" | grep -ci 'max-age=31536000' || echo 0)"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

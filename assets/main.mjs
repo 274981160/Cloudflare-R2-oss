@@ -332,6 +332,8 @@ export function normalizeWhoami(data) {
     locking: raw.locking === true,
     // 回收站开启时，删除提示要写成「已移入回收站」
     trash: raw.trash !== false,
+    previewToken: typeof raw.previewToken === "string" ? raw.previewToken : "",
+    previewTokenExp: Number(raw.previewTokenExp) || 0,
     trashDays: Number(raw.trashDays) || 0,
     version: typeof raw.version === "string" ? raw.version : "",
     reachable: raw.reachable !== false,
@@ -726,16 +728,66 @@ export function fetchBlobWithProgress(url, options) {
  * 服务端没配签名密钥时返回 null，调用方应退回「取回 Blob」的方式。
  */
 /**
+ * 预览 token：登录时由 `/api/whoami` 下发（只读、只对 /raw 生效、12 小时）。
+ * 有了它，预览直链不用再先请求一次 /api/sign——在延迟高的网络里，
+ * 那一次往返就是 1~2 秒，图片会比「整包取回」还慢。
+ */
+let previewToken = "";
+let previewPublicRead = false;
+
+export function setPreviewToken(token, publicRead) {
+  previewToken = typeof token === "string" ? token : "";
+  previewPublicRead = publicRead === true;
+}
+
+export function getPreviewToken() {
+  return previewToken;
+}
+
+/**
+ * 预览直链（**零额外请求**）：
+ * - 私有盘：把登录时下发的预览 token 拼进 /raw 地址
+ * - 公开读：直接给裸 /raw 地址，连 token 都不用
+ * 都不适用时返回空串，调用方退回短时效签名 / 整包取回。
+ */
+export function previewUrl(key) {
+  const target = normalizePath(key);
+  if (!target) return "";
+  if (previewToken) return `${rawUrl(target)}?pt=${encodeURIComponent(previewToken)}`;
+  if (previewPublicRead) return rawUrl(target);
+  return "";
+}
+
+/** 已签名的直链缓存：同一 key 在有效期内复用同一条 URL（浏览器缓存才能命中） */
+const signedCache = new Map();
+
+function expiryOfUrl(url) {
+  const match = /[?&]exp=(\d+)/.exec(String(url || ""));
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+/**
  * 取一条短时效签名直链（浏览器可以原生流式加载：支持 Range、可拖动进度）。
+ * 同一 key 会复用缓存，避免重复签名（也让浏览器缓存能命中）。
  * @param {string} key 对象路径
  * @param {number} [ttlSeconds] 有效期（秒）；服务端会夹到 60..3600
  */
 export async function signedDownloadUrl(key, ttlSeconds) {
+  const target = normalizePath(key);
+  const cached = signedCache.get(target);
+  const now = Math.floor(Date.now() / 1000);
+  if (cached && cached.exp - 120 > now) return cached.url;
+
   let url = `/api/sign?key=${encodeURIComponent(String(key == null ? "" : key))}`;
   const ttl = Number(ttlSeconds);
   if (Number.isFinite(ttl) && ttl > 0) url += `&ttl=${Math.floor(ttl)}`;
   const data = await apiFetchJson(url, { cache: "no-store" });
-  return data && typeof data.url === "string" && data.url ? data.url : null;
+  const signed = data && typeof data.url === "string" && data.url ? data.url : null;
+  if (signed) {
+    const exp = expiryOfUrl(signed) || now + (Number.isFinite(ttl) && ttl > 0 ? ttl : 600);
+    signedCache.set(target, { url: signed, exp });
+  }
+  return signed;
 }
 
 export async function downloadKey(key, options) {

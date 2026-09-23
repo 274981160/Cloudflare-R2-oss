@@ -100,7 +100,7 @@
 - **默认需要认证**：只有开启 `WEBDAV_PUBLIC_READ=1` 时才允许匿名读取，
   或者把 key 交给分享链接（`/s/{token}`）去公开。缩略图同样默认不公开
   （`WEBDAV_PUBLIC_THUMBNAILS=1` 才放行 `_$flaredrive$/thumbnails/`）。
-- `_$flaredrive$/` 下的非缩略图内容（锁、密钥、分享记录、历史版本）**任何情况下都不允许匿名读取**。
+- `_$flaredrive$/` 下的非缩略图内容（锁、密钥、分享记录）**任何情况下都不允许匿名读取**。
 - `_$flaredrive$/thumbnails/` 带 `Cache-Control: max-age=31536000`。
 
 ## 6. `/webdav/*` 认证与权限
@@ -325,19 +325,3 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
 - 过期、篡改、缺参数、把签名用到别的对象上一律 `401`，比较用定长比较。
 - 签名是**读**权限，且只能读被签的那一项；它不会通过权限白名单的其它检查。
 
-## 12. 编辑历史与回退
-
-每次通过网页编辑器保存时，前端会在 `PUT /webdav/{key}` 上带 `fd-snapshot: 1` 请求头，
-服务端在覆盖前把**旧内容**存入内部目录 `_$flaredrive$/versions/{sha1(key)}/`，
-因此改错了可以回退。服务端每个 key 只保留最近 `WEBDAV_VERSION_LIMIT`（默认 10）个版本，
-且默认只对 `fd-snapshot: 1` 的写入做快照（`WEBDAV_VERSION_ALL_PUTS=1` 可放开为所有覆盖写），
-超过 `WEBDAV_VERSION_MAX_SIZE`（默认 10485760 字节）的对象不做快照。
-
-| 接口 | 说明 |
-| --- | --- |
-| `GET /api/versions/list/{key}` | 列出该 key 的历史版本，按时间倒序：`{versions:[{id,size,uploaded,savedBy,uploadedAt}]}` |
-| `GET /api/versions/content/{key}/{id}` | 取某个版本的内容（需要该 key 的读权限） |
-| `POST /api/versions/restore/{key}/{id}` | 把某个版本恢复成当前内容（恢复前会先给「当前内容」也存一份快照，所以恢复本身也能再回退） |
-| `DELETE /api/versions/remove/{key}/{id}` | 删除某个历史版本 |
-
-`id` 形如 `1758520000000-ab12cd`，URL 安全。所有接口都需要认证，并按该 key 的读写权限判定。

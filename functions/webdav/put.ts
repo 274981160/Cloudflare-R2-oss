@@ -1,7 +1,6 @@
 import {
   INTERNAL_PREFIX,
   isAutoMkdirEnabled,
-  isVersionAllPuts,
   maxPutSize,
 } from "../../utils/config";
 import {
@@ -11,7 +10,6 @@ import {
   objectWriteOptions,
   statPath,
 } from "../../utils/core";
-import { snapshotObject } from "../../utils/versions";
 import { DavContext, parentOf } from "./context";
 
 async function handlePutPart(context: DavContext): Promise<Response> {
@@ -92,18 +90,6 @@ export async function handleRequestPut(context: DavContext): Promise<Response> {
   const options = objectWriteOptions(request, {
     cacheControl: isThumbnailKey(path) ? THUMBNAIL_CACHE_CONTROL : undefined,
   });
-
-  // 编辑历史：覆盖前把旧内容存一份，让「改错了」可以回退。
-  // 默认只对带 fd-snapshot: 1 的写入（网页编辑器保存）生效，
-  // WEBDAV_VERSION_ALL_PUTS=1 可放开为所有覆盖写。
-  if (request.headers.get("fd-snapshot") === "1" || isVersionAllPuts(env)) {
-    await snapshotObject(
-      bucket,
-      env,
-      path,
-      subject && subject.account ? subject.account.username : null
-    );
-  }
 
   let result: any;
   try {

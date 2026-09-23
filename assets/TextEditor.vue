@@ -44,16 +44,6 @@
             <span>重做</span>
           </button>
           <button
-            type="button"
-            class="editor-versions-toggle"
-            :class="{ active: showVersions }"
-            aria-label="历史版本"
-            :aria-pressed="showVersions ? 'true' : 'false'"
-            @click="toggleVersions"
-          >
-            <span>历史版本</span>
-          </button>
-          <button
             v-if="canFormat"
             type="button"
             class="editor-format"
@@ -174,80 +164,6 @@
             </div>
           </div>
 
-          <aside v-if="showVersions" class="editor-versions" aria-label="版本列表">
-            <div class="editor-versions-head">
-              <span class="editor-versions-title">历史版本</span>
-              <button
-                type="button"
-                class="editor-versions-action"
-                aria-label="刷新版本列表"
-                :disabled="versionsLoading"
-                @click="fetchVersions"
-              >
-                <span>刷新</span>
-              </button>
-              <button
-                type="button"
-                class="editor-versions-action"
-                aria-label="关闭版本列表"
-                @click="showVersions = false"
-              >
-                <span>关闭</span>
-              </button>
-            </div>
-
-            <p class="editor-versions-hint">
-              每次保存都会自动留一份旧内容，最多保留最近 10 个版本（服务端可配）。
-            </p>
-
-            <p
-              v-if="versionsError"
-              class="editor-versions-error"
-              role="alert"
-              v-text="versionsError"
-            ></p>
-
-            <div v-if="versionsLoading" class="editor-versions-state">加载中...</div>
-            <div v-else-if="!versions.length" class="editor-versions-state">暂无历史版本</div>
-            <ul v-else class="editor-versions-list">
-              <li v-for="version in versions" :key="version.id" class="editor-version">
-                <div class="editor-version-time" v-text="formatDate(version.uploaded) || version.id"></div>
-                <div class="editor-version-meta">
-                  <span v-text="formatSize(version.size)"></span>
-                  <span v-text="version.savedBy ? `保存人 ${version.savedBy}` : '保存人未知'"></span>
-                </div>
-                <div class="editor-version-actions">
-                  <button
-                    type="button"
-                    class="editor-version-button"
-                    :aria-label="`预览版本 ${version.id}`"
-                    :disabled="versionBusy === version.id"
-                    @click="loadVersion(version)"
-                  >
-                    <span>载入到编辑器</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="editor-version-button"
-                    :aria-label="`恢复版本 ${version.id}`"
-                    :disabled="versionBusy === version.id"
-                    @click="restoreVersion(version)"
-                  >
-                    <span>恢复此版本</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="editor-version-button danger"
-                    :aria-label="`删除版本 ${version.id}`"
-                    :disabled="versionBusy === version.id"
-                    @click="deleteVersion(version)"
-                  >
-                    <span>删除此版本</span>
-                  </button>
-                </div>
-              </li>
-            </ul>
-          </aside>
         </div>
       </div>
     </div>
@@ -262,15 +178,10 @@ import {
   detectLanguage,
   downloadKey,
   errorMessage,
-  fetchVersionContent as fetchVersionContentRequest,
-  formatDate,
   formatSize,
   isTextFile,
-  listVersions,
   MAX_HIGHLIGHT_SIZE,
   rawUrl,
-  removeVersion as removeVersionRequest,
-  restoreVersion as restoreVersionRequest,
   tokenize,
   webdavUrl,
 } from "/assets/main.mjs";
@@ -414,19 +325,13 @@ export default {  props: {
     /** JSON 校验结果 */
     jsonValid: false,
     jsonError: "",
-    /** 历史版本面板 */
-    showVersions: false,
-    versions: [],
-    versionsLoading: false,
-    versionsError: "",
-    /** 正在处理（载入 / 恢复 / 删除）的版本 id */
-    versionBusy: "",
     /**
-     * 高亮层使用的文本副本（防抖更新）。
-     * 语法着色要对全文分词并整段重渲染 v-html，如果跟着每个按键走，
-     * 大文件下会明显掉帧；这里让打字保持流畅，着色稍后跟上。
+     * 语法着色使用的文本快照（防抖更新）。
+     * 显示文本永远直接用 content（打字零延迟）；只有「分词着色」这步
+     * 对全文做 tokenize + 生成大量 span，大文件下每个按键都跑会掉帧，
+     * 所以着色基于这份快照，停止输入后短暂延迟跟上。
      */
-    highlightText: "",
+    tokensText: "",
     /** 编辑器内撤销 / 重做（Ctrl+Z / Ctrl+Y），按「一段连续输入」合并成一步 */
     undoStack: [],
     redoStack: [],
@@ -506,7 +411,9 @@ export default {  props: {
       if (!this.colorized) return [];
       const id = this.language.id;
       if (id === "plaintext") return [];
-      return tokenize(this.highlightText, this.language);
+      // 快照与当前内容不一致（正在打字）时先不着色，避免用旧下标错染新文本
+      if (this.tokensText !== this.content) return [];
+      return tokenize(this.content, this.language);
     },
 
     canFormat() {
@@ -527,9 +434,7 @@ export default {  props: {
     },
 
     matches() {
-      // 与高亮层用同一份文本（highlightText），避免打字防抖窗口内
-      // 搜索高亮与实际渲染文本错位
-      return findMatches(this.highlightText, this.search, this.caseSensitive);
+      return findMatches(this.content, this.search, this.caseSensitive);
     },
 
     matchLabel() {
@@ -542,7 +447,7 @@ export default {  props: {
     /** 高亮层：语法着色 + 搜索匹配，与 textarea 内容逐字符对齐 */
     highlightHtml() {
       return buildHighlightHtml(
-        this.highlightText,
+        this.content,
         this.tokens,
         this.matches,
         this.currentIndex
@@ -589,7 +494,6 @@ export default {  props: {
 
   created() {
     this._token = 0;
-    this._versionToken = 0;
   },
 
   mounted() {
@@ -692,86 +596,6 @@ export default {  props: {
       this._lastPushed = text == null ? "" : String(text);
     },
 
-    /* ---------------- 历史版本 ---------------- */
-
-    async toggleVersions() {
-      this.showVersions = !this.showVersions;
-      if (this.showVersions) await this.fetchVersions();
-    },
-
-    async fetchVersions() {
-      if (!this.itemKey) return;
-      this.versionsLoading = true;
-      this.versionsError = "";
-      // 并发保护：快速反复点击时只认最后一次
-      const token = (this._versionToken = (this._versionToken || 0) + 1);
-      try {
-        // 15 秒超时，避免网络挂起时永远停在「加载中」
-        const result = await Promise.race([
-          listVersions(this.itemKey),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("请求超时，请检查网络后重试")), 15000)
-          ),
-        ]);
-        if (token !== this._versionToken) return; // 已被更新的请求取代
-        this.versions = result;
-      } catch (error) {
-        if (token !== this._versionToken) return;
-        this.versions = [];
-        this.versionsError = `读取历史版本失败：${errorMessage(error)}`;
-      } finally {
-        if (token === this._versionToken) this.versionsLoading = false;
-      }
-    },
-
-    /** 把历史版本载入编辑器（不落盘，保存后才生效） */
-    async loadVersion(version) {
-      if (!version || !version.id || !this.itemKey) return;
-      this.versionBusy = version.id;
-      try {
-        this.content = await fetchVersionContentRequest(this.itemKey, version.id);
-        this.resetHistory(this.content);
-        this.setStatus("已载入历史版本，保存后才会覆盖当前内容", false);
-      } catch (error) {
-        this.setStatus(`载入历史版本失败：${errorMessage(error)}`, true);
-      } finally {
-        this.versionBusy = "";
-      }
-    },
-
-    /** 用历史版本覆盖当前对象；服务端会先给当前内容也留一份快照 */
-    async restoreVersion(version) {
-      if (!version || !version.id || !this.itemKey) return;
-      if (!window.confirm(`确定用这个版本覆盖当前内容吗？\n${version.id}`)) return;
-      this.versionBusy = version.id;
-      try {
-        await restoreVersionRequest(this.itemKey, version.id);
-        await this.load();
-        this.setStatus("已恢复到该版本", false);
-        await this.fetchVersions();
-        this.$emit("saved", { key: this.itemKey, size: this.content.length });
-      } catch (error) {
-        this.setStatus(`恢复失败：${errorMessage(error)}`, true);
-      } finally {
-        this.versionBusy = "";
-      }
-    },
-
-    async deleteVersion(version) {
-      if (!version || !version.id || !this.itemKey) return;
-      if (!window.confirm(`确定删除这个历史版本吗？\n${version.id}`)) return;
-      this.versionBusy = version.id;
-      try {
-        await removeVersionRequest(this.itemKey, version.id);
-        await this.fetchVersions();
-        this.setStatus("已删除该历史版本", false);
-      } catch (error) {
-        this.setStatus(`删除失败：${errorMessage(error)}`, true);
-      } finally {
-        this.versionBusy = "";
-      }
-    },
-
     /* ---------------- 打开 / 加载 / 关闭 ---------------- */
 
     reset() {
@@ -800,7 +624,7 @@ export default {  props: {
         clearTimeout(this._hlTimer);
         this._hlTimer = 0;
       }
-      this.highlightText = "";
+      this.tokensText = "";
       this.resetHistory("");
     },
 
@@ -846,7 +670,7 @@ export default {  props: {
         this.jsonValid = false;
         this.jsonError = "";
         this.$nextTick(() => {
-          this.highlightText = this.content;
+          this.tokensText = this.content;
           this.syncLayers();
           this.validateJson();
         });
@@ -886,13 +710,13 @@ export default {  props: {
     /* ---------------- JSON 校验与格式化 ---------------- */
 
     /** 编辑时防抖 300ms 校验 */
-    /** 防抖更新高亮层：停止输入 150ms 后再重新着色，打字过程不卡 */
+    /** 防抖更新着色快照：文字显示零延迟，语法颜色停止输入 250ms 后跟上 */
     scheduleHighlight() {
       if (this._hlTimer) clearTimeout(this._hlTimer);
       this._hlTimer = setTimeout(() => {
         this._hlTimer = 0;
-        this.highlightText = this.content;
-      }, 150);
+        this.tokensText = this.content;
+      }, 250);
     },
 
     scheduleJsonCheck() {
@@ -983,11 +807,7 @@ export default {  props: {
         const response = await apiFetch(url, {
           method: "PUT",
           body: this.content,
-          headers: {
-            "Content-Type": this.uploadContentType,
-            // 让服务端在覆盖前把旧内容存成历史版本，改错了可以回退
-            "fd-snapshot": "1",
-          },
+          headers: { "Content-Type": this.uploadContentType },
         });
         if (response.status !== 200 && response.status !== 201 && response.status !== 204) {
           throw new ApiError(await describeResponseError(response), response.status, url);
@@ -1376,7 +1196,7 @@ export default {  props: {
 }
 
 /* 编辑区：textarea 在上（文字透明、只留光标与选区），高亮层在下承载可见文本 */
-/* 内容区：左编辑区 + 右历史版本面板。两条 flex 规则缺一不可，
+/* 内容区布局。两条 flex 规则缺一不可，
    否则 textarea 的 height:100% 会失去参照高度，内容区塌成一行 */
 .editor-content {
   display: flex;

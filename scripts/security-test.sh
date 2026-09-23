@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 安全模型测试：默认私有 + 分享链接 + 编辑历史。
+# 安全模型测试：默认私有 + 分享链接 + 下载签名 + PROPFIND 兼容性。
 #
 # 用法: scripts/security-test.sh [base-url]
 #
@@ -51,7 +51,6 @@ check "匿名 /webdav/{文件} GET 401" 401 "$(code "$BASE/webdav/_sec/a.txt")"
 check "匿名 /api/zip/{目录} 401" 401 "$(code "$BASE/api/zip/_sec")"
 check "匿名 /api/keys 401" 401 "$(code "$BASE/api/keys")"
 check "匿名 /api/shares 401" 401 "$(code "$BASE/api/shares")"
-check "匿名 /api/versions/list/{key} 401" 401 "$(code "$BASE/api/versions/list/_sec/a.txt")"
 check "匿名猜路径也拿不到内容" "需要登录" "$(curl -s "$BASE/raw/_sec/a.txt" | head -c 12)"
 check "匿名 /s/{不存在token} 404" 404 "$(code "$BASE/s/s_00000000000000000000")"
 check "匿名 /s/{格式非法} 404" 404 "$(code "$BASE/s/not-a-token")"
@@ -64,7 +63,6 @@ check "admin PROPFIND 207" 207 "$(acode -X PROPFIND -H 'Depth: 1' "$BASE/webdav/
 
 section "4. 内部保留目录谁都不能直接读"
 check "admin 读 shares 目录被拒 404" 404 "$(acode "$BASE/raw/_%24flaredrive%24/shares/x.json")"
-check "admin 读 versions 目录被拒 404" 404 "$(acode "$BASE/raw/_%24flaredrive%24/versions/x.bin")"
 check "admin PROPFIND 内部目录 404" 404 "$(acode -X PROPFIND -H 'Depth: 0' "$BASE/webdav/_%24flaredrive%24/shares")"
 check "admin list 内部目录 404" 404 "$(acode "$BASE/api/list/_%24flaredrive%24/shares")"
 check "匿名也一样 404" 404 "$(code "$BASE/raw/_%24flaredrive%24/shares/x.json")"
@@ -124,27 +122,7 @@ check "吊销目录分享 204" 204 "$(acode -X DELETE "$BASE/api/shares/$DTOKEN"
 check "吊销后目录分享 404" 404 "$(code "$BASE/s/$DTOKEN")"
 check "重复吊销 404" 404 "$(acode -X DELETE "$BASE/api/shares/$DTOKEN")"
 
-section "8. 编辑历史与回退"
-VW="$BASE/webdav/_sec/ver.txt"
-acode -X PUT --data-binary 'v1' "$VW" >/dev/null
-check "覆盖写带 fd-snapshot 201" 201 "$(acode -X PUT -H 'fd-snapshot: 1' --data-binary 'v2' "$VW")"
-check "当前内容为 v2" "v2" "$(curl -s -u "$ADMIN" "$BASE/raw/_sec/ver.txt")"
-VLIST="$(curl -s -u "$ADMIN" "$BASE/api/versions/list/_sec/ver.txt")"
-atleast "历史里出现 1 个版本" 1 "$(printf '%s' "$VLIST" | grep -o '"id":' | wc -l | tr -d ' ')"
-VID="$(printf '%s' "$VLIST" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)"
-check "版本内容为 v1" "v1" "$(curl -s -u "$ADMIN" "$BASE/api/versions/content/_sec/ver.txt/$VID")"
-check "不带 fd-snapshot 的覆盖不产生快照" 201 "$(acode -X PUT --data-binary 'v3' "$VW")"
-atleast "版本数仍为 1" 1 "$(printf '%s' "$(curl -s -u "$ADMIN" "$BASE/api/versions/list/_sec/ver.txt")" | grep -o '"id":' | wc -l | tr -d ' ')"
-check "恢复 v1 200" 200 "$(acode -X POST "$BASE/api/versions/restore/_sec/ver.txt/$VID")"
-check "恢复后内容为 v1" "v1" "$(curl -s -u "$ADMIN" "$BASE/raw/_sec/ver.txt")"
-atleast "恢复本身也留了快照（版本变多）" 2 "$(printf '%s' "$(curl -s -u "$ADMIN" "$BASE/api/versions/list/_sec/ver.txt")" | grep -o '"id":' | wc -l | tr -d ' ')"
-check "删除某个版本 204" 204 "$(acode -X DELETE "$BASE/api/versions/remove/_sec/ver.txt/$VID")"
-check "删除不存在的版本 404" 404 "$(acode -X DELETE "$BASE/api/versions/remove/_sec/ver.txt/1758520000000-abcdef")"
-check "受限账号读他人 key 的历史 403" 403 "$(u1code "$BASE/api/versions/list/_sec/ver.txt")"
-check "匿名列历史 401" 401 "$(code "$BASE/api/versions/list/_sec/ver.txt")"
-check "匿名读历史内容 401" 401 "$(code "$BASE/api/versions/content/_sec/ver.txt/$VID")"
-
-section "9. 下载签名直链"
+section "8. 下载签名直链"
 check "匿名取签名 401" 401 "$(code "$BASE/api/sign?key=_sec/a.txt")"
 check "缺 key 参数 400" 400 "$(acode "$BASE/api/sign")"
 check "不存在的对象 404" 404 "$(acode "$BASE/api/sign?key=_sec/不存在.txt")"
@@ -163,7 +141,7 @@ curl -s "$BASE$SIGFOLDER" -o /tmp/sign-share.zip
 check "目录签名打包是合法 zip" "PK" "$(head -c 2 /tmp/sign-share.zip)"
 check "签名不能读到别的对象 401" 401 "$(code "$BASE/raw/_sec/sub/b.txt?exp=9999999999&sig=deadbeef")"
 
-section "9.5 PROPFIND 响应（Android 客户端兼容）"
+section "8.5 PROPFIND 响应（Android 客户端兼容）"
 PFROOT="$(curl -s -u "$ADMIN" -X PROPFIND -H 'Depth: 1' "$BASE/webdav/")"
 atleast "默认命名空间 multistatus" 1 "$(printf '%s' "$PFROOT" | grep -c '<multistatus xmlns="DAV:"')"
 check "无 D: 前缀" 0 "$(printf '%s' "$PFROOT" | grep -c '<D:')"
@@ -176,7 +154,7 @@ atleast "集合标记 resourcetype" 1 "$(printf '%s' "$PFROOT" | grep -c '<colle
 FHREF="$(printf '%s' "$PFROOT" | grep -o '<href>[^<]*/</href>' | head -1)"
 atleast "目录 href 以 / 结尾" 1 "$(printf '%s' "$FHREF" | grep -c '/</href>')"
 
-section "10. 清理"
+section "9. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"
 

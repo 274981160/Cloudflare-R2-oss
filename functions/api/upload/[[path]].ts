@@ -1,6 +1,7 @@
 import {
   Env,
   THUMBNAILS_PREFIX,
+  isTrashEnabled,
   maxPutSize,
 } from "../../../utils/config";
 import {
@@ -24,6 +25,7 @@ import {
   ensureDirectories,
   isCollectionPath,
   isThumbnailKey,
+  statPath,
 } from "../../../utils/core";
 
 const ROUTE = "/api/upload";
@@ -151,7 +153,19 @@ async function handleUpload(context: any): Promise<Response> {
 
   let result: any;
   try {
-    result = await bucket.put(
+    // 覆盖前先把旧文件收进回收站
+  if (isTrashEnabled(env) && key) {
+    const existing = await statPath(bucket, key);
+    if (existing && !existing.isDirectory) {
+      await preserveBeforeOverwrite(
+        bucket,
+        key,
+        subject.account ? subject.account.username : null
+      );
+    }
+  }
+
+  result = await bucket.put(
       key,
       body ?? null,
       (Object.keys(customMetadata).length

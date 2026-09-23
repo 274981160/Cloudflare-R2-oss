@@ -1,4 +1,6 @@
-import { objectWriteOptions } from "../../utils/core";
+import { isTrashEnabled } from "../../utils/config";
+import { objectWriteOptions, statPath } from "../../utils/core";
+import { preserveBeforeOverwrite } from "../../utils/trash";
 import { DavContext } from "./context";
 
 async function createMultipart(context: DavContext): Promise<Response> {
@@ -18,7 +20,7 @@ async function createMultipart(context: DavContext): Promise<Response> {
 }
 
 async function completeMultipart(context: DavContext): Promise<Response> {
-  const { bucket, path, request } = context;
+  const { bucket, path, request, env, subject } = context;
   const uploadId = new URL(request.url).searchParams.get("uploadId");
   if (!uploadId || !path) return new Response("Bad Request", { status: 400 });
 
@@ -34,6 +36,18 @@ async function completeMultipart(context: DavContext): Promise<Response> {
   }
 
   try {
+    // 覆盖前先保旧文件（分片上传同样适用）
+    if (isTrashEnabled(env)) {
+      const existing = await statPath(bucket, path);
+      if (existing && !existing.isDirectory) {
+        await preserveBeforeOverwrite(
+          bucket,
+          path,
+          subject && subject.account ? subject.account.username : null
+        );
+      }
+    }
+
     const multipartUpload = bucket.resumeMultipartUpload(path, uploadId);
     const object = await multipartUpload.complete(body.parts);
     const headers = new Headers();

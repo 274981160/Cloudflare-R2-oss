@@ -1,6 +1,7 @@
 import {
   INTERNAL_PREFIX,
   isAutoMkdirEnabled,
+  isTrashEnabled,
   maxPutSize,
 } from "../../utils/config";
 import {
@@ -10,7 +11,7 @@ import {
   objectWriteOptions,
   statPath,
 } from "../../utils/core";
-import { releaseTrashedFile } from "../../utils/trash";
+import { preserveBeforeOverwrite, releaseTrashedFile } from "../../utils/trash";
 import { isTrashed } from "../../utils/trashindex";
 import { DavContext, parentOf } from "./context";
 
@@ -88,6 +89,14 @@ export async function handleRequestPut(context: DavContext): Promise<Response> {
     const existing = await statPath(bucket, path);
     if (existing && existing.isDirectory) {
       return new Response("不能把目录覆盖成文件", { status: 405 });
+    }
+    // 覆盖已有文件前，先把旧内容收进回收站——传错版本也还能找回来
+    if (existing && isTrashEnabled(env)) {
+      await preserveBeforeOverwrite(
+        bucket,
+        path,
+        subject && subject.account ? subject.account.username : null
+      );
     }
 
     const parent = parentOf(path);

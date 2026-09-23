@@ -234,6 +234,29 @@
       </div>
     </Dialog>
 
+    <Dialog v-model="showUploadConflictDialog">
+      <div class="form-dialog" @click.stop>
+        <h3 class="dialog-title" v-text="`有 ${uploadConflicts.length} 个同名文件`"></h3>
+        <p class="form-hint">目标位置已经有这些名字：</p>
+        <p class="form-hint conflict-preview" v-text="uploadConflictPreview"></p>
+        <p class="form-hint">
+          选择「覆盖」时，被覆盖的旧文件会先进回收站，之后仍能找回；
+          选择「重命名」则会保留两份。
+        </p>
+        <div class="form-actions">
+          <button type="button" class="text-button" @click="resolveUploadConflict('cancel')">
+            取消上传
+          </button>
+          <button type="button" class="text-button" @click="resolveUploadConflict('rename')">
+            重命名保留两份
+          </button>
+          <button type="button" class="primary-button" @click="resolveUploadConflict('overwrite')">
+            覆盖（旧的进回收站）
+          </button>
+        </div>
+      </div>
+    </Dialog>
+
     <Dialog v-model="showShareDialog">
       <div class="form-dialog" @click.stop>
         <h3 class="dialog-title">分享并设置有效期</h3>
@@ -427,6 +450,7 @@ import {
   ApiError,
   apiFetch,
   basename,
+  checkKeysExist,
   clearAuth,
   copyKey,
   copyTextToClipboard,
@@ -522,6 +546,9 @@ export default {
     showApiKeys: false,
     showShares: false,
     showTrash: false,
+    showUploadConflictDialog: false,
+    /** 上传时撞名的目标 key 列表（用于弹窗提示） */
+    uploadConflicts: [],
     showPreview: false,
     previewItem: null,
     /** 缩略图摘要 → blob URL；空串表示取回失败（不再重试，回退 MIME 图标） */
@@ -570,6 +597,13 @@ export default {
     manageKeys() {
       const permissions = Array.isArray(this.profile.permissions) ? this.profile.permissions : [];
       return this.profile.authenticated === true && permissions.indexOf("*") !== -1;
+    },
+
+    /** 同名文件预览（最多列 6 个） */
+    uploadConflictPreview() {
+      const list = this.uploadConflicts.map((key) => basename(key)).filter(Boolean);
+      const shown = list.slice(0, 6).join("、");
+      return list.length > 6 ? `${shown} 等 ${list.length} 个` : shown;
     },
 
     /** 当前目录里「能补缩略图但还没有」的文件（决定菜单项是否出现） */
@@ -1565,7 +1599,7 @@ export default {
      * @param {string} [basedir] 目标目录
      * @param {string[]} [emptyDirs] 需要补建的空目录（相对 basedir 的路径）
      */
-    uploadFiles(fileList, basedir, emptyDirs) {
+    async uploadFiles(fileList, basedir, emptyDirs) {
       if (!this.canWrite) {
         this.showNotice("当前为只读模式，无法上传", "error");
         return;
@@ -1593,12 +1627,100 @@ export default {
         });
       const dirTasks = this.normalizeEmptyDirs(emptyDirs, directory);
       if (!tasks.length && !dirTasks.length) return;
-      if (tasks.length) {
-        this.uploadQueue.push(...tasks);
-        this.uploadTotalCount += tasks.length;
+
+      // 上传前先查同名：有冲突就让用户选「覆盖（旧的进回收站）/ 重命名 / 取消」
+      let finalTasks = tasks;
+      if (this.profile.authenticated && tasks.length) {
+        finalTasks = await this.resolveUploadConflicts(tasks);
+        if (finalTasks === null) return; // 用户取消
+      }
+
+      if (finalTasks.length) {
+        this.uploadQueue.push(...finalTasks);
+        this.uploadTotalCount += finalTasks.length;
       }
       if (dirTasks.length) this.uploadDirQueue.push(...dirTasks);
       this.processUploadQueue();
+    },
+
+    /**
+     * 同名处理。返回处理后的任务列表；用户取消时返回 null。
+     * - 覆盖：原样上传，服务端会把被覆盖的旧文件收进回收站
+     * - 重命名：把冲突文件改成「名字 - 副本」，保留两份
+     */
+    async resolveUploadConflicts(tasks) {
+      const keys = tasks.map((task) => joinKey(task.basedir, task.file.name));
+      let conflicts = [];
+      try {
+        conflicts = await checkKeysExist(keys);
+      } catch (error) {
+        // 预检失败不打断上传（服务端仍会保护被覆盖的文件）
+        console.warn("同名预检失败", error);
+        return tasks;
+      }
+      if (!conflicts.length) return tasks;
+
+      const choice = await this.askUploadConflict(conflicts);
+      if (choice === "cancel") return null;
+      if (choice !== "rename") return tasks; // overwrite：交给服务端把旧文件收进回收站
+
+      // 重命名：给冲突项找不重复的名字（最多试 5 轮，靠服务端预检确认）
+      const taken = new Set(conflicts);
+      const renamed = new Map();
+      let pending = tasks.filter((task) =>
+        taken.has(joinKey(task.basedir, task.file.name))
+      );
+      for (let round = 0; round < 5 && pending.length; round++) {
+        const candidates = new Map();
+        for (const task of pending) {
+          const key = joinKey(task.basedir, task.file.name);
+          const family = Array.from(taken)
+            .filter((item) => dirname(item) === dirname(key))
+            .map((item) => basename(item));
+          candidates.set(task, duplicateName(task.file.name, family));
+          taken.add(joinKey(task.basedir, candidates.get(task)));
+        }
+        let stillExisting = [];
+        try {
+          stillExisting = await checkKeysExist(
+            Array.from(candidates.values()).map((name, index) => {
+              const task = Array.from(candidates.keys())[index];
+              return joinKey(task.basedir, name);
+            })
+          );
+        } catch (error) {
+          stillExisting = [];
+        }
+        const blocked = new Set(stillExisting);
+        for (const [task, name] of candidates) {
+          const key = joinKey(task.basedir, name);
+          if (blocked.has(key)) continue;
+          renamed.set(task, name);
+        }
+        pending = pending.filter((task) => !renamed.has(task));
+      }
+
+      return tasks.map((task) => {
+        const name = renamed.get(task);
+        return name ? { basedir: task.basedir, file: task.file, name } : task;
+      });
+    },
+
+    /** 弹窗问用户怎么处理同名文件，返回 "overwrite" | "rename" | "cancel" */
+    askUploadConflict(conflicts) {
+      this.uploadConflicts = conflicts.slice();
+      this.showUploadConflictDialog = true;
+      return new Promise((resolve) => {
+        this._uploadConflictResolve = resolve;
+      });
+    },
+
+    resolveUploadConflict(choice) {
+      this.showUploadConflictDialog = false;
+      const resolve = this._uploadConflictResolve;
+      this._uploadConflictResolve = null;
+      this.uploadConflicts = [];
+      if (typeof resolve === "function") resolve(choice);
     },
 
     /** 空目录去重并按层级从浅到深排序（父目录要先于子目录创建） */
@@ -1645,7 +1767,7 @@ export default {
         while (this.uploadQueue.length) {
           const task = this.uploadQueue.shift();
           const file = task.file;
-          const key = joinKey(task.basedir, file.name);
+          const key = joinKey(task.basedir, task.name || file.name);
           this.uploadStatus = `正在上传（${this.uploadFinishedCount + 1}/${this.uploadTotalCount}）：${this.uploadDisplayPath(key)}`;
           this.uploadProgress = 0;
           try {
@@ -1665,8 +1787,8 @@ export default {
               break;
             }
           }
-          if (/\.zip$/i.test(file.name || "")) {
-            uploadedZips.push({ key, name: file.name });
+          if (/\.zip$/i.test(task.name || file.name || "")) {
+            uploadedZips.push({ key, name: task.name || file.name });
           }
           this.uploadFinishedCount++;
         }

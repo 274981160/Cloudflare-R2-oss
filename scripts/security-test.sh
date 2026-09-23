@@ -194,6 +194,33 @@ check "彻底删除 200" 200 "$(acode -X DELETE "$BASE/api/trash/$TID2")"
 check "吊销该分享 204" 204 "$(acode -X DELETE "$BASE/api/shares/$TTOKEN")"
 check "内部目录仍不能写入 403" 403 "$(acode -X POST -F 'file=@/tmp/smoke-upload.txt' "$BASE/api/upload/_%24flaredrive%24/trash/evil.json")"
 
+section "8.7 同名预检不能变成路径探测工具"
+check "匿名预检 401" 401 "$(code -X POST -H 'Content-Type: application/json' -d '{"keys":["_sec/a.txt"]}' "$BASE/api/exists")"
+check "受限账号查范围外路径不泄漏存在性" "[]" "$(curl -s -u "$USER1" -X POST -H 'Content-Type: application/json' -d '{"keys":["_sec/a.txt"]}' "$BASE/api/exists" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['existing']))")"
+check "受限账号查自己范围内正常返回" 201 "$(u1code -X PUT --data 'mine' "$BASE/webdav/user1/probe.txt")"
+atleast "自己范围内能查到" 1 "$(curl -s -u "$USER1" -X POST -H 'Content-Type: application/json' -d '{"keys":["user1/probe.txt"]}' "$BASE/api/exists" | grep -c 'probe')"
+check "清理探针 204" 204 "$(u1code -X DELETE "$BASE/webdav/user1/probe.txt")"
+
+section "8.8 覆盖保护与回收站内容不泄漏"
+check "写入待覆盖文件 201" 201 "$(acode -X PUT --data 'old-secret' "$W/overwrite-secret.txt")"
+check "覆盖写入 201" 201 "$(acode -X PUT --data 'new-content' "$W/overwrite-secret.txt")"
+check "覆盖后新内容生效" "new-content" "$(curl -s -u "$ADMIN" "$W/overwrite-secret.txt")"
+OVT="$(curl -s -u "$ADMIN" "$BASE/api/trash" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['items']
+hit=[i['id'] for i in items if i['key']=='_sec/overwrite-secret.txt']
+print(hit[0] if hit else '')" 2>/dev/null)"
+atleast "被覆盖的旧版本进了回收站" 1 "$(printf '%s' "$OVT" | grep -c .)"
+check "受限账号看不到这条记录" 0 "$(curl -s -u "$USER1" "$BASE/api/trash" | grep -c 'overwrite-secret')"
+check "受限账号不能恢复它 403" 403 "$(u1code -X POST "$BASE/api/trash/$OVT/restore")"
+check "回收站内部对象路径一律当作不存在（404）" 404 "$(acode "$BASE/raw/_%24flaredrive%24/trash/objects")"
+check "回收站记录 JSON 也不可直接读" 404 "$(acode "$BASE/raw/_%24flaredrive%24/trash/")"
+check "回收站目录不出现在列表里" 404 "$(acode "$BASE/api/list/_%24flaredrive%24/trash")"
+check "管理员恢复旧版本 200" 200 "$(acode -X POST "$BASE/api/trash/$OVT/restore")"
+check "旧内容确实找回了" "old-secret" "$(curl -s -u "$ADMIN" "$W/overwrite-secret.txt%20(%E6%81%A2%E5%A4%8D)")"
+check "清理覆盖测试文件 204" 204 "$(acode -X DELETE "$W/overwrite-secret.txt")"
+check "清理恢复出来的文件 204" 204 "$(acode -X DELETE "$W/overwrite-secret.txt%20(%E6%81%A2%E5%A4%8D)")"
+
 section "9. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"

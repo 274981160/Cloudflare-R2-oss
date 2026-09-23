@@ -56,11 +56,20 @@ async function pathHasContent(bucket: R2Bucket, key: string): Promise<boolean> {
   );
 }
 
-/** 移入回收站（只写记录，不动文件）。返回 null 表示路径不存在。 */
+/**
+ * 移入回收站。
+ *
+ * 默认「标记模式」：只写记录、内容原地不动，对外隐藏——删除瞬间完成。
+ * `preserveContent` 时改成「搬走模式」：把内容真的移到回收站内部路径。
+ * 覆盖场景必须用后者，否则紧随其后的写入会把旧内容顶掉，恢复出来就是新文件了。
+ *
+ * 返回 null 表示路径不存在。
+ */
 export async function moveToTrash(
   bucket: R2Bucket,
   path: string,
-  deletedBy: string | null
+  deletedBy: string | null,
+  options: { preserveContent?: boolean } = {}
 ): Promise<TrashEntry | null> {
   const target = normalizePath(path);
   if (!target) throw new CoreError(403, "不允许删除根目录");
@@ -73,18 +82,46 @@ export async function moveToTrash(
     ? await measurePath(bucket, target)
     : { count: 1, size: stat.size };
 
+  const id = createTrashId();
+  const name = baseNameOf(target) || target;
   const entry: TrashEntry = {
-    id: createTrashId(),
+    id,
     key: target,
-    name: baseNameOf(target) || target,
+    name,
     type: stat.isDirectory ? "folder" : "file",
     size: measured.size,
     count: measured.count,
     deletedAt: new Date().toISOString(),
     deletedBy,
   };
+
+  // 只有「文件」才搬内容：目录搬起来可能是几个 GB，代价太大；
+  // 而 PUT/MKCOL 本来就不允许用文件覆盖目录，不会走到这里。
+  if (options.preserveContent && !stat.isDirectory) {
+    const movedTo = `${TRASH_PREFIX}objects/${id}/${encodeURIComponent(name).replace(/%2F/gi, "_")}`;
+    await copyPath(bucket, target, movedTo, { overwrite: true, depth: "0" });
+    await deletePath(bucket, target, { includeTrashed: true });
+    entry.movedTo = movedTo;
+  }
+
   await saveTrashEntry(bucket, entry);
   return entry;
+}
+
+/**
+ * 覆盖写入前的保险：目标已存在就先把它收进回收站（保留内容）。
+ * 返回被保留的记录（没覆盖到东西时返回 null）。
+ */
+export async function preserveBeforeOverwrite(
+  bucket: R2Bucket,
+  key: string,
+  deletedBy: string | null
+): Promise<TrashEntry | null> {
+  const target = normalizePath(key);
+  if (!target || isTrashKey(target)) return null;
+  const existing = await statPath(bucket, target);
+  if (!existing || existing.isDirectory) return null;
+  return moveToTrash(bucket, target, deletedBy, { preserveContent: true });
 }
 
 export { TRASH_PREFIX };
@@ -102,7 +139,8 @@ export async function restoreFromTrash(
 
   // 内容可能已经被「彻底删除父目录」之类的操作真删掉了，这时要如实告知，
   // 而不是把记录一删了事、让用户以为恢复成功了
-  if (!(await pathHasContent(bucket, entry.key))) {
+  const source = entry.movedTo || entry.key;
+  if (!(await pathHasContent(bucket, source))) {
     await removeTrashEntry(bucket, id);
     throw new CoreError(410, "该项的内容已被彻底删除，无法恢复（已从回收站移除）");
   }
@@ -126,8 +164,15 @@ export async function restoreFromTrash(
     if (!renamed) throw new CoreError(409, "原位置被占用，且没能生成可用的新名字");
   }
 
-  if (target !== entry.key) {
-    // 只有「原位置被占用」时才真的要搬一次（copy + delete）
+  if (entry.movedTo) {
+    // 覆盖时被搬走的内容：搬回目标路径
+    await copyPath(bucket, entry.movedTo, target, {
+      overwrite: false,
+      depth: "infinity",
+    });
+    await deletePath(bucket, entry.movedTo, { includeTrashed: true });
+  } else if (target !== entry.key) {
+    // 标记模式且原位置被占用：这才需要真的搬一次（copy + delete）
     await copyPath(bucket, entry.key, target, { overwrite: false, depth: "infinity" });
     await deletePath(bucket, entry.key);
   }
@@ -164,7 +209,9 @@ export async function purgeTrashEntry(
 ): Promise<number> {
   const entry = await loadTrashEntry(bucket, id);
   if (!entry) throw new CoreError(404, "回收站里没有这一项");
-  const deleted = await deletePath(bucket, entry.key, { includeTrashed: true });
+  const deleted = entry.movedTo
+    ? await deletePath(bucket, entry.movedTo, { includeTrashed: true })
+    : await deletePath(bucket, entry.key, { includeTrashed: true });
   await removeTrashEntry(bucket, id);
 
   // 若回收站里还有「位于它内部」的条目，那些内容已经被一并删掉，
@@ -172,6 +219,9 @@ export async function purgeTrashEntry(
   const rest = await listTrash(bucket);
   for (const other of rest) {
     if (other.id === id) continue;
+    // 指向被彻底删除内容的「标记模式」下级记录一并清掉；
+    // moved 模式的内容在回收站自己的路径里，不受影响
+    if (other.movedTo) continue;
     if (other.key === entry.key || other.key.startsWith(`${entry.key}/`)) {
       await removeTrashEntry(bucket, other.id);
     }

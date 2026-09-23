@@ -2606,6 +2606,25 @@ export function normalizeShare(data) {
   };
 }
 
+/**
+ * 上传前的同名预检：`POST /api/exists`
+ * @param {string[]} keys 要检查的目标路径
+ * @returns {Promise<string[]>} 其中已经存在的那些
+ */
+export async function checkKeysExist(keys) {
+  const list = (Array.isArray(keys) ? keys : [])
+    .map((key) => normalizePath(key))
+    .filter(Boolean);
+  if (!list.length) return [];
+  const data = await apiFetchJson("/api/exists", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keys: list }),
+  });
+  const existing = data && Array.isArray(data.existing) ? data.existing : [];
+  return existing.map((key) => normalizePath(key));
+}
+
 /* ------------------------------------------------------------------ *
  * 回收站
  * ------------------------------------------------------------------ */

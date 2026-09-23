@@ -21,6 +21,15 @@ export interface TrashEntry {
   deletedAt: string;
   /** 删除者（账号名），受限账号只能看到自己删的 */
   deletedBy: string | null;
+  /**
+   * 「保留内容」模式下，内容被搬到了这里（回收站内部路径）。
+   * 不填 = 标记模式：内容还在原路径，只是对外隐藏。
+   *
+   * 为什么要两种：删除用标记模式（瞬间完成、不搬数据）；
+   * 而「覆盖前保留旧文件」必须真的把旧内容搬走——否则紧随其后的写入会把它顶掉，
+   * 恢复出来的就是新文件了。
+   */
+  movedTo?: string;
 }
 
 function normalize(key: string): string {
@@ -114,7 +123,12 @@ export function invalidateTrashIndex(): void {
 export async function trashedPrefixes(bucket: R2Bucket): Promise<string[]> {
   const now = Date.now();
   if (indexCache && now - indexCache.at < INDEX_TTL) return indexCache.prefixes;
-  const prefixes = (await listTrash(bucket)).map((entry) => entry.key).filter(Boolean);
+  // 只隐藏「标记模式」的记录：moved 模式的原路径已经空了，
+  // 新文件要能正常写到那儿（这正是覆盖流程）
+  const prefixes = (await listTrash(bucket))
+    .filter((entry) => !entry.movedTo)
+    .map((entry) => entry.key)
+    .filter(Boolean);
   indexCache = { at: now, prefixes };
   return prefixes;
 }

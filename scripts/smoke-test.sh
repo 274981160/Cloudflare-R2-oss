@@ -295,6 +295,36 @@ check "匿名读回收站 401" 401 "$(code "$BASE/api/trash")"
 check "回收站不能被直接分享 403" 403 "$(acode -X POST -H 'Content-Type: application/json' -d '{"key":"_$flaredrive$/trash"}' "$BASE/api/shares")"
 check "清理回收站测试残留 204" 204 "$(acode -X DELETE "$W/trash-target")"
 
+section "13.7 覆盖保护（旧文件进回收站）"
+OV="$W/overwrite"
+check "建覆盖测试目录 201" 201 "$(acode -X MKCOL "$OV")"
+check "写入旧版本 201" 201 "$(acode -X PUT --data 'version-1' "$OV/doc.txt")"
+check "同名覆盖写入 201" 201 "$(acode -X PUT --data 'version-2' "$OV/doc.txt")"
+check "覆盖后内容是新版本" "version-2" "$(curl -s "$W/overwrite/doc.txt")"
+OVTRASH="$(curl -s -u "$ADMIN" "$BASE/api/trash")"
+atleast "被覆盖的旧版本进了回收站" 1 "$(printf '%s' "$OVTRASH" | grep -c '"_smoke/overwrite/doc.txt"')"
+check "覆盖不影响该路径可见性" "doc.txt" "$(curl -s -u "$ADMIN" "$BASE/api/list/_smoke/overwrite" | python3 -c "
+import json,sys
+print(','.join(f['name'] for f in json.load(sys.stdin)['files']))")"
+OVID="$(printf '%s' "$OVTRASH" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['items']
+hit=[i['id'] for i in items if i['key']=='_smoke/overwrite/doc.txt']
+print(hit[0] if hit else '')" 2>/dev/null)"
+check "恢复旧版本 200" 200 "$(acode -X POST "$BASE/api/trash/$OVID/restore")"
+check "旧版本改名保留（原路径已被新文件占用）" "version-1" "$(curl -s "$W/overwrite/doc.txt%20(%E6%81%A2%E5%A4%8D)")"
+check "新版本仍在" "version-2" "$(curl -s "$W/overwrite/doc.txt")"
+check "清理覆盖测试目录 204" 204 "$(acode -X DELETE "$OV")"
+
+section "13.8 同名预检 /api/exists"
+check "建预检探针文件 201" 201 "$(acode -X PUT --data 'probe' "$W/exists-probe.txt")"
+check "预检已存在 200" 200 "$(acode -X POST -H 'Content-Type: application/json' -d '{"keys":["_smoke/exists-probe.txt"]}' "$BASE/api/exists")"
+atleast "预检结果含已存在的 key" 1 "$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"keys":["_smoke/exists-probe.txt"]}' "$BASE/api/exists" | grep -c 'exists-probe')"
+check "预检不存在的返回空" "[]" "$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"keys":["_smoke/no-such-file-xyz"]}' "$BASE/api/exists" | python3 -c "import json,sys; print(json.dumps(json.load(sys.stdin)['existing']))")"
+check "预检空 keys 400" 400 "$(acode -X POST -H 'Content-Type: application/json' -d '{"keys":[]}' "$BASE/api/exists")"
+check "预检非 JSON 400" 400 "$(acode -X POST -H 'Content-Type: application/json' -d 'nope' "$BASE/api/exists")"
+check "匿名预检 401" 401 "$(code -X POST -H 'Content-Type: application/json' -d '{"keys":["_smoke/a.txt"]}' "$BASE/api/exists")"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

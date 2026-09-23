@@ -1,7 +1,9 @@
 import { canWrite } from "../../utils/auth";
 import { extractKeyFromPathname } from "../../utils/bucket";
 import { isLockingEnabled } from "../../utils/config";
-import { CoreError, copyPath } from "../../utils/core";
+import { isTrashEnabled } from "../../utils/config";
+import { CoreError, copyPath, statPath } from "../../utils/core";
+import { preserveBeforeOverwrite } from "../../utils/trash";
 import { findBlockingLock } from "../../utils/lock";
 import { DavContext } from "./context";
 
@@ -59,11 +61,30 @@ export async function handleRequestCopy(context: DavContext): Promise<Response> 
   }
 
   try {
+    const overwrite = readOverwrite(request);
+    // 目标是否本来就在：决定响应码（204=覆盖，201=新建）。
+    // 必须在「把旧内容收进回收站」之前判断——那一步会把目标搬走，
+    // 之后 copyPath 就会以为自己是新建。
+    const existedBefore = overwrite
+      ? Boolean(await statPath(bucket, destination))
+      : false;
+
+    // 覆盖已有目标前，先把旧内容收进回收站（与上传覆盖同一套保护）
+    if (existedBefore && isTrashEnabled(env)) {
+      await preserveBeforeOverwrite(
+        bucket,
+        destination,
+        subject && subject.account ? subject.account.username : null
+      );
+    }
+
     const result = await copyPath(bucket, path, destination, {
-      overwrite: readOverwrite(request),
+      overwrite,
       depth: readCopyDepth(request),
     });
-    return new Response(null, { status: result.created ? 201 : 204 });
+    return new Response(null, {
+      status: existedBefore || !result.created ? 204 : 201,
+    });
   } catch (error) {
     if (error instanceof CoreError) {
       return new Response(error.message, { status: error.status });

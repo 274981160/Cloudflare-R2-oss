@@ -4,6 +4,7 @@ import {
   putDirectory,
   statPath,
 } from "../../utils/core";
+import { isTrashed } from "../../utils/trashindex";
 import { DavContext, parentOf } from "./context";
 
 export async function handleRequestMkcol(context: DavContext): Promise<Response> {
@@ -11,6 +12,15 @@ export async function handleRequestMkcol(context: DavContext): Promise<Response>
 
   if (!path) {
     return new Response("Method Not Allowed", { status: 405 });
+  }
+
+  // 回收站里的同名位置：不允许直接建目录（那里还留着可恢复的内容），
+  // 让用户先恢复或彻底删除
+  if (await isTrashed(bucket, path)) {
+    return new Response(
+      "该路径在回收站里，请先从回收站恢复或彻底删除",
+      { status: 409 }
+    );
   }
 
   const existing = await statPath(bucket, path);

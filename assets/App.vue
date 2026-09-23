@@ -396,6 +396,8 @@
 
     <Shares v-model="showShares"></Shares>
 
+    <Trash v-model="showTrash" @changed="onTrashChanged"></Trash>
+
     <PreviewOverlay
       v-model="showPreview"
       :item="previewItem"
@@ -419,6 +421,7 @@ import FolderPicker from "./FolderPicker.vue";
 import TextEditor from "./TextEditor.vue";
 import ApiKeys from "./ApiKeys.vue";
 import Shares from "./Shares.vue";
+import Trash from "./Trash.vue";
 import PreviewOverlay from "./PreviewOverlay.vue";
 import {
   ApiError,
@@ -479,6 +482,7 @@ export default {
     TextEditor,
     ApiKeys,
     Shares,
+    Trash,
     PreviewOverlay,
   },
 
@@ -517,6 +521,7 @@ export default {
     showTextEditor: false,
     showApiKeys: false,
     showShares: false,
+    showTrash: false,
     showPreview: false,
     previewItem: null,
     /** 缩略图摘要 → blob URL；空串表示取回失败（不再重试，回退 MIME 图标） */
@@ -684,6 +689,7 @@ export default {
       if (this.manageKeys) items.push({ text: "API 密钥" });
       // 分享是普通功能，任何已登录账号都能管理自己创建的分享
       if (this.profile.authenticated) items.push({ text: "分享管理" });
+      if (this.profile.authenticated) items.push({ text: "回收站" });
       if (this.profile.authenticated && this.thumbMissing.length) {
         items.push({ text: `生成缩略图（${this.thumbMissing.length}）` });
       }
@@ -1286,6 +1292,11 @@ export default {
       };
       this.editorForceText = true;
       this.showTextEditor = true;
+    },
+
+    /** 回收站里恢复/删除后刷新列表 */
+    async onTrashChanged() {
+      await this.fetchFiles();
     },
 
     /** 预览里切到上一张/下一张：只换对象，预览层会自己重新拉取 */
@@ -2045,12 +2056,17 @@ export default {
 
     async removeItem(item) {
       if (!item) return;
-      const hint = item.type === "folder" ? "，文件夹内的全部内容都会被递归删除" : "";
+      const trashOn = this.profile.trash !== false;
+      const hint = trashOn
+        ? "（会放进回收站，之后可以恢复）"
+        : item.type === "folder"
+        ? "，文件夹内的全部内容都会被递归删除"
+        : "";
       if (!window.confirm(`确定要删除「${item.name}」吗？${hint}`)) return;
       try {
         await removeKey(item.key);
         this.selectedKeys = this.selectedKeys.filter((key) => key !== item.key);
-        this.showNotice("已删除", "success");
+        this.showNotice(trashOn ? `已移入回收站：${item.name}` : "已删除", "success");
         await this.fetchFiles();
       } catch (error) {
         this.showNotice(`删除失败：${errorMessage(error)}`, "error");
@@ -2074,7 +2090,12 @@ export default {
       this.selectedKeys = [];
       await this.fetchFiles();
       if (failures.length) this.showNotice(`删除失败：${failures.join("；")}`, "error");
-      else this.showNotice(`已删除 ${items.length} 个项目`, "success");
+      else this.showNotice(
+        this.profile.trash !== false
+          ? `已删除 ${items.length} 个项目（已移入回收站）`
+          : `已删除 ${items.length} 个项目`,
+        "success"
+      );
     },
 
     /* ---------------- 菜单与杂项 ---------------- */
@@ -2114,6 +2135,9 @@ export default {
           break;
         case "分享管理":
           this.showShares = true;
+          break;
+        case "回收站":
+          this.showTrash = true;
           break;
         case "登录":
           this.openLoginDialog();

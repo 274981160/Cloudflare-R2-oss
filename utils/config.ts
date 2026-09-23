@@ -11,6 +11,8 @@ export const INTERNAL_PREFIX = "_$flaredrive$/";
 export const THUMBNAILS_PREFIX = "_$flaredrive$/thumbnails/";
 /** 分享链接记录存放目录。 */
 export const SHARES_PREFIX = "_$flaredrive$/shares/";
+/** 回收站记录存放目录（只放 JSON 记录，文件本身留在原处，靠标记隐藏）。 */
+export const TRASH_PREFIX = "_$flaredrive$/trash/";
 /** 目录对象使用的 Content-Type。 */
 export const DIRECTORY_CONTENT_TYPE = "application/x-directory";
 /** 旧版汉化分支使用的目录标记后缀，形如 `X/_$folder$`。 */
@@ -26,6 +28,8 @@ export const DEFAULT_MAX_DEPTH_ITEMS = 10000;
 export const DEFAULT_MAX_ZIP_SIZE = 1024 * 1024 * 1024; // 1GB
 export const DEFAULT_MAX_UNZIP_ENTRIES = 5000;
 export const DEFAULT_MAX_UNZIP_FILE_SIZE = 100 * 1000 * 1000; // 100MB
+/** 回收站默认保留天数：超期自动彻底删除 */
+export const DEFAULT_TRASH_DAYS = 30;
 
 /** 上报给 WebDAV 客户端的“可用空间”，避免客户端因空间检查而拒绝写入。 */
 export const REPORTED_AVAILABLE_BYTES = 1024 * 1024 * 1024 * 1024; // 1TB
@@ -56,6 +60,19 @@ export function isPublicRead(env: Env): boolean {
 /** 缩略图是否允许匿名引用。默认关闭；关闭时前端用带认证的请求取回再转 blob URL。 */
 export function isPublicThumbnails(env: Env): boolean {
   return readFlag(env.WEBDAV_PUBLIC_THUMBNAILS, false);
+}
+
+/**
+ * 是否启用回收站（删除先进回收站，可恢复）。**默认开启**：
+ * 删错东西没法救的代价，比多占一点空间大得多。
+ */
+export function isTrashEnabled(env: Env): boolean {
+  return readFlag(env.WEBDAV_TRASH, true);
+}
+
+/** 回收站保留天数（到期自动彻底删除）。 */
+export function trashDays(env: Env): number {
+  return readInt(env.WEBDAV_TRASH_DAYS, DEFAULT_TRASH_DAYS);
 }
 
 /** 是否启用 LOCK/UNLOCK（DAV class 2）与写操作锁校验。 */

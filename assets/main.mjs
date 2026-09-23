@@ -330,6 +330,9 @@ export function normalizeWhoami(data) {
     canWriteAny,
     maxUploadSize,
     locking: raw.locking === true,
+    // 回收站开启时，删除提示要写成「已移入回收站」
+    trash: raw.trash !== false,
+    trashDays: Number(raw.trashDays) || 0,
     version: typeof raw.version === "string" ? raw.version : "",
     reachable: raw.reachable !== false,
   };
@@ -2601,6 +2604,48 @@ export function normalizeShare(data) {
     createdBy: raw.createdBy ? String(raw.createdBy) : "",
     expiresAt: raw.expiresAt || null,
   };
+}
+
+/* ------------------------------------------------------------------ *
+ * 回收站
+ * ------------------------------------------------------------------ */
+
+/** `GET /api/trash`：列出回收站内容 */
+export async function listTrash() {
+  const data = await apiFetchJson("/api/trash", { cache: "no-store" });
+  const items = data && Array.isArray(data.items) ? data.items : [];
+  return {
+    enabled: !(data && data.enabled === false),
+    retentionDays: Number(data && data.retentionDays) || 0,
+    items: items.map((item) => ({
+      id: String(item.id || ""),
+      key: normalizePath(item.key == null ? "" : item.key),
+      name: String(item.name || ""),
+      type: item.type === "folder" ? "folder" : "file",
+      size: Number(item.size) || 0,
+      count: Number(item.count) || 0,
+      deletedAt: item.deletedAt || null,
+      deletedBy: item.deletedBy ? String(item.deletedBy) : "",
+      retentionDays: Number(item.retentionDays) || 0,
+    })),
+  };
+}
+
+/** `POST /api/trash/{id}/restore`：恢复到原位置（原位置被占用时自动改名） */
+export async function restoreTrash(id) {
+  const url = `/api/trash/${encodeURIComponent(String(id == null ? "" : id))}/restore`;
+  return apiFetchJson(url, { method: "POST" });
+}
+
+/** `DELETE /api/trash/{id}`：彻底删除某一项 */
+export async function purgeTrash(id) {
+  const url = `/api/trash/${encodeURIComponent(String(id == null ? "" : id))}`;
+  return apiFetchJson(url, { method: "DELETE" });
+}
+
+/** `DELETE /api/trash`：清空回收站 */
+export async function emptyTrash() {
+  return apiFetchJson("/api/trash", { method: "DELETE" });
 }
 
 /** 分享类型的中文文案 */

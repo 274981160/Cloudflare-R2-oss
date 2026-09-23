@@ -38,6 +38,8 @@ PPBODY='<?xml version="1.0" encoding="utf-8"?><D:propertyupdate xmlns:D="DAV:"><
 
 # 清理上次残留
 curl -s -o /dev/null -u "$ADMIN" -X DELETE "$W"
+# 删除现在会进回收站，残留会挡住同名重建 → 顺手清空回收站，保证脚本可反复执行
+curl -s -o /dev/null -u "$ADMIN" -X DELETE "$BASE/api/trash"
 curl -s -o /dev/null -u "$ADMIN" -X DELETE "$BASE/webdav/_smoke-key"
 
 section "1. OPTIONS 与服务发现"
@@ -257,6 +259,41 @@ fi
 check "压缩来源越权被拒 403" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "$USER1" -X POST -H 'Content-Type: application/json' -d '{"sources":["_smoke/online.zip"]}' "$BASE/api/compress/_smoke/user1-forbidden.zip")"
 check "解压 zip 不存在 404" 404 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"_smoke/out"}' "$BASE/api/unzip/_smoke/nope.zip")"
 check "解压非 zip 400" 400 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"_smoke/out"}' "$BASE/api/unzip/_smoke/docs/hello.txt")"
+
+section "13.6 回收站（软删除）"
+TR="$W/trash-target"
+check "建回收站测试目录 201" 201 "$(acode -X MKCOL "$TR")"
+check "写入待删文件 201" 201 "$(acode -X PUT --data 'precious data' "$TR/keep.txt")"
+check "删除返回 204" 204 "$(acode -X DELETE "$TR")"
+check "删除后列表里消失 404" 404 "$(code "$BASE/api/list/_smoke/trash-target")"
+check "删除后直链 404" 404 "$(code "$W/trash-target/keep.txt")"
+check "删除后 PROPFIND 404" 404 "$(code -X PROPFIND -H 'Depth: 0' "$W/trash-target")"
+TRASHJSON="$(curl -s -u "$ADMIN" "$BASE/api/trash")"
+TRASHID="$(printf '%s' "$TRASHJSON" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['items']
+hit=[i['id'] for i in items if i['key']=='_smoke/trash-target']
+print(hit[0] if hit else '')" 2>/dev/null)"
+atleast "回收站里能查到" 1 "$(printf '%s' "$TRASHID" | grep -c .)"
+atleast "回收站带原路径与大小" 1 "$(printf '%s' "$TRASHJSON" | grep -c '"_smoke/trash-target"')"
+check "回收站里不能往该路径写入 409" 409 "$(acode -X PUT --data 'x' "$W/trash-target/new.txt")"
+check "恢复 200" 200 "$(acode -X POST "$BASE/api/trash/$TRASHID/restore")"
+check "恢复后内容完好" "precious data" "$(curl -s "$W/trash-target/keep.txt")"
+check "恢复后回收站不再有它" 0 "$(curl -s -u "$ADMIN" "$BASE/api/trash" | grep -c '"_smoke/trash-target"')"
+check "再次删除 204" 204 "$(acode -X DELETE "$TR")"
+TRASHID2="$(curl -s -u "$ADMIN" "$BASE/api/trash" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['items']
+hit=[i['id'] for i in items if i['key']=='_smoke/trash-target']
+print(hit[0] if hit else '')" 2>/dev/null)"
+check "彻底删除 200" 200 "$(acode -X DELETE "$BASE/api/trash/$TRASHID2")"
+check "彻底删除后该路径可重新写入 201" 201 "$(acode -X PUT --data 'new' "$W/trash-target")"
+check "彻底删除后直链是新内容" "new" "$(curl -s "$W/trash-target")"
+check "回收站不存在的项 404" 404 "$(acode -X DELETE "$BASE/api/trash/nope-不存在")"
+check "恢复不存在的项 404" 404 "$(acode -X POST "$BASE/api/trash/nope-不存在/restore")"
+check "匿名读回收站 401" 401 "$(code "$BASE/api/trash")"
+check "回收站不能被直接分享 403" 403 "$(acode -X POST -H 'Content-Type: application/json' -d '{"key":"_$flaredrive$/trash"}' "$BASE/api/shares")"
+check "清理回收站测试残留 204" 204 "$(acode -X DELETE "$W/trash-target")"
 
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"

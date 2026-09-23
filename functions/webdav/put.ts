@@ -10,6 +10,8 @@ import {
   objectWriteOptions,
   statPath,
 } from "../../utils/core";
+import { releaseTrashedFile } from "../../utils/trash";
+import { isTrashed } from "../../utils/trashindex";
 import { DavContext, parentOf } from "./context";
 
 async function handlePutPart(context: DavContext): Promise<Response> {
@@ -68,6 +70,19 @@ export async function handleRequestPut(context: DavContext): Promise<Response> {
 
   const isInternal = path === INTERNAL_PREFIX.replace(/\/$/, "") ||
     path.startsWith(INTERNAL_PREFIX);
+
+  // 已进回收站的位置还留着旧内容。若回收站里正好是「同名文件」，那份内容
+  // 马上就会被这次写入覆盖，记录已无意义 → 自动清掉后继续；
+  // 其余情况（文件夹、或位于回收站子树内）拦住，让用户先恢复或彻底删除。
+  if (!isInternal && (await isTrashed(bucket, path))) {
+    const released = await releaseTrashedFile(bucket, path);
+    if (!released || (await isTrashed(bucket, path))) {
+      return new Response(
+        "该路径在回收站里，请先从回收站恢复或彻底删除后再上传",
+        { status: 409 }
+      );
+    }
+  }
 
   if (!isInternal) {
     const existing = await statPath(bucket, path);

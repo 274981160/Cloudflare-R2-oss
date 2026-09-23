@@ -1,6 +1,11 @@
-import { Env, maxPutSize } from "../../../utils/config";
+import {
+  Env,
+  THUMBNAILS_PREFIX,
+  maxPutSize,
+} from "../../../utils/config";
 import {
   authenticate,
+  isInternalPath,
   canWrite,
   forbidden,
   unauthorized,
@@ -116,6 +121,12 @@ async function handleUpload(context: any): Promise<Response> {
   if (key.startsWith("_$flaredrive$/") && !isThumbnailKey(key)) {
     return forbidden("内部保留目录不可写");
   }
+  // 内部保留目录（分享/锁/回收站记录、缩略图除外）不允许通过上传接口写入，
+  // 与 WebDAV 的规则保持一致
+  if (isInternalPath(key) && !key.startsWith(THUMBNAILS_PREFIX)) {
+    return forbidden("内部保留目录不能写入");
+  }
+
   if (!canWrite(subject, key)) {
     return auth.anonymous
       ? unauthorized("需要登录或提供 API Key")

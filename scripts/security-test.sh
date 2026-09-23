@@ -30,6 +30,8 @@ WOTHER="$BASE/webdav/_sec-other"
 
 # 清理上次残留
 curl -s -o /dev/null -u "$ADMIN" -X DELETE "$W"
+# 删除现在会进回收站，残留会挡住同名重建 → 顺手清空回收站，保证脚本可反复执行
+curl -s -o /dev/null -u "$ADMIN" -X DELETE "$BASE/api/trash"
 curl -s -o /dev/null -u "$ADMIN" -X DELETE "$WOTHER"
 
 section "1. 准备数据"
@@ -161,6 +163,36 @@ atleast "集合标记 resourcetype" 1 "$(printf '%s' "$PFROOT" | grep -c '<colle
 # 文件夹 href 以 / 结尾（标准客户端要求）
 FHREF="$(printf '%s' "$PFROOT" | grep -o '<href>[^<]*/</href>' | head -1)"
 atleast "目录 href 以 / 结尾" 1 "$(printf '%s' "$FHREF" | grep -c '/</href>')"
+
+section "8.6 回收站：内容不能经分享/签名泄漏"
+check "写入待回收文件 201" 201 "$(acode -X PUT --data 'trash-secret' "$W/trash-share.txt")"
+TSHARE="$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec/trash-share.txt"}' "$BASE/api/shares")"
+TTOKEN="$(printf '%s' "$TSHARE" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)"
+check "分享可用 200" 200 "$(code "$BASE/s/$TTOKEN")"
+check "删除该文件 204" 204 "$(acode -X DELETE "$W/trash-share.txt")"
+check "回收后分享链接 404" 404 "$(code "$BASE/s/$TTOKEN")"
+check "回收后签名接口 404" 404 "$(acode "$BASE/api/sign?key=_sec/trash-share.txt")"
+check "回收后已认证直链 404" 404 "$(acode "$BASE/raw/_sec/trash-share.txt")"
+check "回收后匿名直链仍是 401（私有模式）" 401 "$(code "$BASE/raw/_sec/trash-share.txt")"
+check "受限账号看不到别人删的" 0 "$(curl -s -u "$USER1" "$BASE/api/trash" | grep -c 'trash-share')"
+TID="$(curl -s -u "$ADMIN" "$BASE/api/trash" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['items']
+hit=[i['id'] for i in items if i['key']=='_sec/trash-share.txt']
+print(hit[0] if hit else '')" 2>/dev/null)"
+check "受限账号不能恢复别人的 403" 403 "$(u1code -X POST "$BASE/api/trash/$TID/restore")"
+check "受限账号不能彻底删别人的 403" 403 "$(u1code -X DELETE "$BASE/api/trash/$TID")"
+check "管理员恢复 200" 200 "$(acode -X POST "$BASE/api/trash/$TID/restore")"
+check "恢复后分享又能访问" "trash-secret" "$(curl -s "$BASE/s/$TTOKEN")"
+check "恢复后再删一次 204" 204 "$(acode -X DELETE "$W/trash-share.txt")"
+TID2="$(curl -s -u "$ADMIN" "$BASE/api/trash" | python3 -c "
+import json,sys
+items=json.load(sys.stdin)['items']
+hit=[i['id'] for i in items if i['key']=='_sec/trash-share.txt']
+print(hit[0] if hit else '')" 2>/dev/null)"
+check "彻底删除 200" 200 "$(acode -X DELETE "$BASE/api/trash/$TID2")"
+check "吊销该分享 204" 204 "$(acode -X DELETE "$BASE/api/shares/$TTOKEN")"
+check "内部目录仍不能写入 403" 403 "$(acode -X POST -F 'file=@/tmp/smoke-upload.txt' "$BASE/api/upload/_%24flaredrive%24/trash/evil.json")"
 
 section "9. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"

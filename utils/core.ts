@@ -5,6 +5,14 @@ import {
   LEGACY_DIR_MARKER,
 } from "./config";
 import { normalizePath } from "./auth";
+import {
+  isTrashed,
+  matchesTrashed,
+  trashedPrefixes,
+} from "./trashindex";
+
+// 供 trash.ts 等复用，避免各处再从 auth 引一次
+export { normalizePath };
 
 /** 目录只有两种载体：目录对象本身，或旧的 `X/_$folder$` 标记。 */
 export interface ObjectMeta {
@@ -120,12 +128,18 @@ function toFileEntry(obj: any): FileEntry {
   return { ...meta, name: baseName(meta.key) };
 }
 
-/** 递归/一层列出对象，自动翻页，并跳过内部保留目录。 */
+/**
+ * 递归/一层列出对象，自动翻页，并跳过内部保留目录。
+ * 默认也会跳过「已进回收站」的内容（includeTrashed=true 时才包含，
+ * 只有回收站自身的彻底删除/清空需要）。
+ */
 export async function* listAll(
   bucket: R2Bucket,
   prefix = "",
-  recursive = false
+  recursive = false,
+  options: { includeTrashed?: boolean } = {}
 ): AsyncGenerator<any> {
+  const trashed = options.includeTrashed ? [] : await trashedPrefixes(bucket);
   let cursor: string | undefined;
   do {
     const listed: any = await bucket.list({
@@ -137,6 +151,7 @@ export async function* listAll(
 
     for (const obj of listed.objects || []) {
       if (isInternalKey(obj.key)) continue;
+      if (!options.includeTrashed && matchesTrashed(trashed, obj.key)) continue;
       yield obj;
     }
 
@@ -151,6 +166,8 @@ export async function isCollectionPath(
 ): Promise<boolean> {
   const target = normalizePath(path);
   if (!target) return true;
+  // 回收站里的内容对外一律「不存在」
+  if (await isTrashed(bucket, target)) return false;
 
   const head: any = await bucket.head(target);
   if (head) {
@@ -191,6 +208,8 @@ export async function statPath(
 ): Promise<PathStat | null> {
   const target = normalizePath(path);
   if (!target) return { ...ROOT_STAT };
+  // 回收站里的内容对外一律「不存在」：直链 404、WebDAV 读不到、也不能再签直链
+  if (await isTrashed(bucket, target)) return null;
 
   const head: any = await bucket.head(target);
   if (head) {
@@ -221,6 +240,64 @@ export async function statPath(
   };
 }
 
+/**
+ * 与 statPath 相同，但**不过滤回收站**（只有彻底删除需要，因为那时内容还在原路径）。
+ */
+async function statPathRaw(
+  bucket: R2Bucket,
+  path: string
+): Promise<PathStat | null> {
+  const target = normalizePath(path);
+  if (!target) return { ...ROOT_STAT };
+
+  const head: any = await bucket.head(target);
+  if (head) {
+    const meta = toMeta(head);
+    return {
+      ...meta,
+      exists: true,
+      isDirectory: isDirectoryObject(head),
+      synthetic: false,
+    };
+  }
+
+  const marker: any = await bucket.head(`${target}/${LEGACY_DIR_MARKER}`);
+  if (marker) {
+    return {
+      key: target,
+      exists: true,
+      isDirectory: true,
+      size: 0,
+      uploaded: null,
+      etag: null,
+      httpEtag: null,
+      contentType: DIRECTORY_CONTENT_TYPE,
+      customMetadata: {},
+      thumbnail: null,
+      synthetic: true,
+    };
+  }
+
+  const probe: any = await bucket.list({ prefix: `${target}/`, limit: 1 } as any);
+  const hasChild =
+    (probe.objects || []).length > 0 || (probe.delimitedPrefixes || []).length > 0;
+  if (!hasChild) return null;
+
+  return {
+    key: target,
+    exists: true,
+    isDirectory: true,
+    size: 0,
+    uploaded: null,
+    etag: null,
+    httpEtag: null,
+    contentType: DIRECTORY_CONTENT_TYPE,
+    customMetadata: {},
+    thumbnail: null,
+    synthetic: true,
+  };
+}
+
 /** 列出目录的直接子项（一层）。 */
 export async function listDirectory(
   bucket: R2Bucket,
@@ -232,6 +309,7 @@ export async function listDirectory(
   const files: FileEntry[] = [];
   let sawChild = false;
   let cursor: string | undefined;
+  const trashed = await trashedPrefixes(bucket);
 
   do {
     const listed: any = await bucket.list({
@@ -244,6 +322,7 @@ export async function listDirectory(
     for (const obj of listed.objects || []) {
       const key = obj.key as string;
       if (isInternalKey(key)) continue;
+      if (matchesTrashed(trashed, key)) continue;
       sawChild = true;
 
       if (isDirectoryObject(obj)) {
@@ -261,6 +340,7 @@ export async function listDirectory(
     for (const raw of listed.delimitedPrefixes || []) {
       const dirKey = normalizePath(raw as string);
       if (!dirKey || isInternalKey(dirKey)) continue;
+      if (matchesTrashed(trashed, dirKey)) continue;
       sawChild = true;
       if (!folders.has(dirKey)) {
         folders.set(dirKey, { key: dirKey, name: baseName(dirKey), legacy: false });
@@ -377,12 +457,19 @@ async function deleteKeysBatched(
  */
 export async function deletePath(
   bucket: R2Bucket,
-  path: string
+  path: string,
+  options: { includeTrashed?: boolean } = {}
 ): Promise<number> {
   const target = normalizePath(path);
   if (!target) throw new CoreError(403, "不允许删除根目录");
+  // 默认不允许硬删回收站里的内容：那属于「彻底删除」，必须走回收站接口
+  if (!options.includeTrashed && (await isTrashed(bucket, target))) {
+    throw new CoreError(409, "该路径在回收站里，请从回收站恢复或彻底删除");
+  }
 
-  const stat = await statPath(bucket, target);
+  const stat = options.includeTrashed
+    ? await statPathRaw(bucket, target)
+    : await statPath(bucket, target);
   if (!stat) return 0;
 
   if (!stat.isDirectory) {
@@ -392,7 +479,9 @@ export async function deletePath(
 
   const keys: string[] = [];
   const prefix = `${target}/`;
-  for await (const obj of listAll(bucket, prefix, true)) {
+  for await (const obj of listAll(bucket, prefix, true, {
+    includeTrashed: options.includeTrashed,
+  })) {
     keys.push(obj.key);
   }
   keys.push(`${target}/${LEGACY_DIR_MARKER}`);
@@ -449,6 +538,10 @@ export async function copyPath(
 
   if (!destination) throw new CoreError(403, "目标路径非法");
   if (source === destination) throw new CoreError(400, "源与目标相同");
+  // 不许把东西写进「已回收」的位置：那里还留着旧内容，会造成两边打架
+  if (await isTrashed(bucket, destination)) {
+    throw new CoreError(409, "目标路径在回收站里，请先恢复或彻底删除");
+  }
   if (source && destination.startsWith(`${source}/`)) {
     throw new CoreError(400, "不能把资源复制到自身子目录");
   }

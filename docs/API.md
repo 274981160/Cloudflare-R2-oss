@@ -26,6 +26,8 @@
   "canWriteAny": true,
   "maxUploadSize": 104857600,
   "locking": true,
+  "trash": true,
+  "trashDays": 30,
   "version": "1.0.0"
 }
 ```
@@ -137,6 +139,34 @@ zip 本身要可读，落盘位置要可写；恶意条目名（`..` 跳级、�
   ```
 - 打包体积超过 `WEBDAV_MAX_ZIP_SIZE` 返回 `413`；无权限返回 `403`。
 - 通过 R2 分片上传实现，不把整包读进内存。
+
+## 4.3 `DELETE /webdav/{path}` — 删除（默认进回收站）
+
+**行为变化**：默认情况下删除是「软删除」——只在 `_$flaredrive$/trash/` 写一条记录，
+文件内容原地不动但立刻对所有读取路径不可见（列表看不到、`/raw` 404、PROPFIND 404、
+分享链接 404、也不能再签直链）。所以删除是**瞬间完成**的，不会因为目录很大而中途失败。
+
+- 响应 `204`，并带 `X-FlareDrive-Trash: <id>` 头（可据此提示「已移入回收站」）。
+- 对已回收的位置再次写入（PUT/MKCOL）返回 `409`；例外：回收站里正好是同名的**文件**时，
+  那次写入会覆盖它，记录自动清掉后放行。
+- `WEBDAV_TRASH=0` 时恢复成直接物理删除（无回收站头）。
+
+## 4.4 `/api/trash` — 回收站
+
+需要登录。受限账号只能看到/操作自己删的内容；恢复还要求对原路径有写权限。
+
+| 请求 | 说明 |
+| --- | --- |
+| `GET /api/trash` | 列出回收站：`{ enabled, retentionDays, purged, items: [{ id, key, name, type, size, count, deletedAt, deletedBy, retentionDays }] }`，`items` 按删除时间倒序 |
+| `POST /api/trash/{id}/restore` | 恢复到原位置：`{ restored, renamed }`。原位置被占用时自动改成「名字 (恢复)」，绝不覆盖 |
+| `DELETE /api/trash/{id}` | 彻底删除这一项（真正的物理删除）：`{ deleted }` |
+| `DELETE /api/trash` | 清空回收站：`{ items, objects }` |
+
+- 每次调用都会顺带做过期清理：超过 `WEBDAV_TRASH_DAYS`（默认 30 天）的项自动彻底删除，
+  `purged` 字段报告本次清掉了几项（Pages Functions 没有定时任务，只能这样懒清理）。
+- 记录还在、但内容已被彻底删除（例如先删了子项又彻底删了父目录）时，恢复返回 `410`
+  并把这条悬空记录清掉；彻底删除父目录时，其下级的回收记录会一并清理。
+- 回收站位于内部保留目录下，**任何情况下都不能通过 `/raw`、`/webdav`、`/api/list` 或分享链接读到**。
 
 ## 5. `GET /raw/{key}`
 

@@ -3,7 +3,9 @@ import {
   isLockingEnabled,
   isPublicRead,
   isPublicThumbnails,
+  isTrashEnabled,
   maxPutSize,
+  trashDays,
   webdavVersion,
 } from "../../utils/config";
 import {
@@ -41,6 +43,9 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     canWriteAny: canWriteAnywhere(subject),
     maxUploadSize: maxPutSize(env),
     locking: isLockingEnabled(env),
+    // 前端据此把「已删除」文案改成「已移入回收站」
+    trash: isTrashEnabled(env),
+    trashDays: trashDays(env),
     version: webdavVersion(),
   });
 };

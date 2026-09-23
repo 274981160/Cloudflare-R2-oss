@@ -47,6 +47,8 @@
               <td class="shares-key">
                 <code v-text="share.key || '（根目录）'"></code>
                 <span v-if="share.createdBy" class="shares-by" v-text="`由 ${share.createdBy} 创建`"></span>
+                <!-- 窄屏下「创建时间 / 过期时间」两列会被隐藏，这里补一行等价的文字 -->
+                <span class="shares-key-meta" v-text="mobileMeta(share)"></span>
               </td>
               <td v-text="typeLabel(share.type)"></td>
               <td v-text="formatDate(share.createdAt) || '—'"></td>
@@ -58,7 +60,8 @@
                   aria-label="复制分享链接"
                   @click="copyLink(share)"
                 >
-                  <span>复制分享链接</span>
+                  <span class="shares-btn-long">复制分享链接</span>
+                  <span class="shares-btn-short">复制</span>
                 </button>
                 <button
                   type="button"
@@ -163,6 +166,28 @@ export default {
     typeLabel: shareTypeLabel,
 
     formatDate,
+
+    /**
+     * 窄屏下补在路径下方的一行：创建 + 到期。
+     * 这里刻意用紧凑日期（YYYY-MM-DD），因为手机上那点宽度放不下完整时间串。
+     */
+    mobileMeta(share) {
+      if (!share) return "";
+      const parts = [];
+      const created = this.shortDate(share.createdAt);
+      if (created) parts.push(`创建 ${created}`);
+      parts.push(share.expiresAt ? `到期 ${this.shortDate(share.expiresAt)}` : "长期有效");
+      return parts.join(" · ");
+    },
+
+    /** YYYY-MM-DD（无效值返回空串） */
+    shortDate(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      const pad = (number) => String(number).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    },
 
     /** 分享的绝对地址：服务端没给就按当前站点补全 */
     shareLink(share) {
@@ -319,6 +344,8 @@ export default {
 
 .shares-table {
   width: 100%;
+  /* 固定布局：长文件名只会换行，不会把整张表撑宽（手机上是主要问题） */
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.82em;
 }
@@ -329,7 +356,13 @@ export default {
   text-align: left;
   border-bottom: 1px solid #f0f0f0;
   vertical-align: top;
+  /* 长文件名（含没有空格的长串）必须能在单元格内折行 */
   word-break: break-all;
+  overflow-wrap: anywhere;
+}
+
+.shares-table td {
+  min-width: 0;
 }
 
 .shares-table th {
@@ -344,6 +377,10 @@ export default {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+.shares-key-meta {
+  display: none;
+}
+
 .shares-by {
   display: block;
   margin-top: 4px;
@@ -351,13 +388,40 @@ export default {
   font-size: 0.9em;
 }
 
+/* 列宽固定，剩余宽度全部给「路径」，长文件名只在单元格内折行 */
+.shares-table th:nth-child(2),
+.shares-table td:nth-child(2) {
+  width: 4.5em;
+}
+
+.shares-table th:nth-child(3),
+.shares-table td:nth-child(3),
+.shares-table th:nth-child(4),
+.shares-table td:nth-child(4) {
+  /* 放得下完整时间串，避免日期被折成两行 */
+  width: 12.5em;
+}
+
+.shares-table th:nth-child(5),
+.shares-table td:nth-child(5) {
+  width: 12em;
+}
+
+/* 操作按钮可换行：三个按钮挤在一行会溢出单元格，把表格撑宽 */
 .shares-actions {
-  white-space: nowrap;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* 长/短两套按钮文案：窄屏用短的，避免按钮自己把列撑宽 */
+.shares-btn-short {
+  display: none;
 }
 
 .shares-button {
   padding: 4px 10px;
-  margin: 2px 4px 2px 0;
+  margin: 0;
   border-radius: 6px;
   border: 1px solid #ddd;
   color: #0b5fa5;
@@ -394,13 +458,64 @@ export default {
   .shares-dialog {
     width: 94vw;
     max-height: 88vh;
+    padding: 12px;
   }
 
+  .shares-table {
+    font-size: 0.78em;
+  }
+
+  .shares-table th,
+  .shares-table td {
+    padding: 6px 8px;
+  }
+
+  /* 固定列宽：类型窄、操作够放按钮，剩余宽度全给路径 */
+  .shares-table th:nth-child(2),
+  .shares-table td:nth-child(2) {
+    width: 3.6em;
+  }
+
+  .shares-table th:nth-child(5),
+  .shares-table td:nth-child(5) {
+    width: 8.2em;
+  }
+
+  .shares-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    white-space: normal;
+  }
+
+  .shares-button {
+    margin: 0;
+    padding: 3px 8px;
+    font-size: 0.9em;
+  }
+
+  .shares-btn-long {
+    display: none;
+  }
+
+  .shares-btn-short {
+    display: inline;
+  }
+
+  /* 窄屏放不下 5 列：创建时间 / 过期时间两列改为在「路径」下方展示 */
   .shares-table th:nth-child(3),
   .shares-table td:nth-child(3),
   .shares-table th:nth-child(4),
   .shares-table td:nth-child(4) {
     display: none;
+  }
+
+  .shares-key-meta {
+    display: block;
+    margin-top: 3px;
+    color: dimgray;
+    font-size: 0.85em;
+    white-space: normal;
   }
 }
 </style>

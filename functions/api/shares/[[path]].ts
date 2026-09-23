@@ -105,18 +105,24 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
       return forbidden("没有该路径的读权限，无法分享");
     }
 
+    // 有效期：显式带了 expiresInDays 才处理；
+    // 传正整数=多少天，传 null / 空串 / 0 = 永久（用于把已有的限时分享改回永久）
     let expiresInDays: number | null = null;
-    const rawExpires = payload?.expiresInDays;
-    if (
-      rawExpires !== undefined &&
-      rawExpires !== null &&
-      String(rawExpires).trim() !== ""
-    ) {
-      const parsedDays = parseInt(String(rawExpires), 10);
-      if (!Number.isFinite(parsedDays) || parsedDays <= 0) {
-        return badRequest("expiresInDays 必须是正整数");
+    let expiryRequested = false;
+    if (payload && Object.prototype.hasOwnProperty.call(payload, "expiresInDays")) {
+      const rawExpires = payload.expiresInDays;
+      const text = String(rawExpires == null ? "" : rawExpires).trim();
+      if (text === "" || text === "0") {
+        expiryRequested = true;
+        expiresInDays = null;
+      } else {
+        const parsedDays = parseInt(text, 10);
+        if (!Number.isFinite(parsedDays) || parsedDays <= 0) {
+          return badRequest("expiresInDays 必须是正整数，或用 null 表示永久");
+        }
+        expiryRequested = true;
+        expiresInDays = Math.min(parsedDays, 3650);
       }
-      expiresInDays = Math.min(parsedDays, 3650);
     }
 
     const origin = new URL(request.url).origin;
@@ -131,6 +137,18 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
       createdBy
     );
     if (existing) {
+      // 复用同一条记录；但如果这次显式指定了有效期，就把它更新掉，
+      // 否则用户「给已有分享设 7 天」会毫无效果。
+      if (expiryRequested) {
+        const nextExpiresAt = expiresInDays
+          ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
+          : null;
+        if ((existing.expiresAt || null) !== nextExpiresAt) {
+          const updated: ShareRecord = { ...existing, expiresAt: nextExpiresAt };
+          await saveShare(loaded.bucket, updated);
+          return jsonResponse(publicShare(updated, origin), 200);
+        }
+      }
       return jsonResponse(publicShare(existing, origin), 200);
     }
 

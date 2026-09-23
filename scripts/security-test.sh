@@ -82,6 +82,14 @@ check "分享响应带 noindex" 1 "$(curl -s -D- -o /dev/null "$BASE/s/$TOKEN" |
 check "文件分享不能越权访问子路径 404" 404 "$(code "$BASE/s/$TOKEN/whatever")"
 check "文件分享不能越权访问兄弟文件 404" 404 "$(code --path-as-is "$BASE/s/$TOKEN/../_sec-other/c.txt")"
 check "重复创建同一 key 复用同一条 200" 200 "$(code -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec/a.txt"}' "$BASE/api/shares")"
+# 有效期：显式指定时必须能更新已有分享（原来复用时不生效，用户设了也没用）
+EXP7="$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec/a.txt","expiresInDays":7}' "$BASE/api/shares" | grep -o '"expiresAt":"[^"]*"' | cut -d'"' -f4)"
+atleast "分享可设 7 天有效期" 1 "$(printf '%s' "$EXP7" | grep -c 'T')"
+EXP1="$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec/a.txt","expiresInDays":1}' "$BASE/api/shares" | grep -o '"expiresAt":"[^"]*"' | cut -d'"' -f4)"
+check "复用分享时更新有效期（7 天 → 1 天）" "different" "$([ "$EXP7" != "$EXP1" ] && echo different || echo same)"
+check "可改回永久（expiresAt=null）" 1 "$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec/a.txt","expiresInDays":null}' "$BASE/api/shares" | grep -c '"expiresAt":null')"
+check "非法有效期 400" 400 "$(code -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec/a.txt","expiresInDays":"abc"}' "$BASE/api/shares")"
+check "分享列表只有一条记录（复用而非新增）" 1 "$(curl -s -u "$ADMIN" "$BASE/api/shares" | grep -o '"_sec/a.txt"' | wc -l | tr -d ' ')"
 
 section "6. 分享链接：目录"
 DSHARE="$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"key":"_sec"}' "$BASE/api/shares")"

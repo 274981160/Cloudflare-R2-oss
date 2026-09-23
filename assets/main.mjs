@@ -2535,8 +2535,11 @@ export function shareTypeLabel(type) {
 export async function createShare(key, options) {
   const settings = options || {};
   const body = { key: normalizePath(key) };
-  const days = Number(settings.expiresInDays);
-  if (Number.isInteger(days) && days > 0) body.expiresInDays = days;
+  // 显式带 expiresInDays 才会传：正整数=多少天，null/0=永久（可把已有分享改回永久）
+  if (Object.prototype.hasOwnProperty.call(settings, "expiresInDays")) {
+    const days = Number(settings.expiresInDays);
+    body.expiresInDays = Number.isInteger(days) && days > 0 ? days : null;
+  }
   const data = await apiFetchJson("/api/shares", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

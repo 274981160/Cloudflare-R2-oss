@@ -234,6 +234,28 @@
       </div>
     </Dialog>
 
+    <Dialog v-model="showShareDialog">
+      <div class="form-dialog" @click.stop>
+        <h3 class="dialog-title">分享并设置有效期</h3>
+        <p class="form-hint" v-text="shareTarget ? `对象：${shareTarget.name}` : ''"></p>
+        <label class="form-field">
+          <span class="form-label">链接有效期</span>
+          <select class="form-input" v-model="shareExpiry">
+            <option value="1">1 天</option>
+            <option value="7">7 天</option>
+            <option value="30">30 天</option>
+            <option value="0">永久有效</option>
+          </select>
+        </label>
+        <p class="form-hint">到期后链接自动失效；也可以随时在「分享管理」里吊销。</p>
+        <p v-if="formError" class="form-error" v-text="formError"></p>
+        <div class="form-actions">
+          <button type="button" class="text-button" @click="closeShareDialog">取消</button>
+          <button type="button" class="primary-button" @click="confirmShare">生成并复制链接</button>
+        </div>
+      </div>
+    </Dialog>
+
     <Dialog v-model="showCompressDialog">
       <div class="form-dialog" @click.stop>
         <h3 class="dialog-title">压缩为 zip</h3>
@@ -270,6 +292,11 @@
           </li>
           <li>
             <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
+          </li>
+          <li>
+            <button @click="runAction(() => openShareDialog(focusedItem))">
+              <span>分享（设有效期）</span>
+            </button>
           </li>
           <li v-if="canWrite">
             <button @click="runAction(() => openCompressDialog([focusedItem]))"><span>压缩为 zip</span></button>
@@ -320,6 +347,11 @@
           </li>
           <li>
             <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
+          </li>
+          <li>
+            <button @click="runAction(() => openShareDialog(focusedItem))">
+              <span>分享（设有效期）</span>
+            </button>
           </li>
           <li v-if="canWrite">
             <button @click="runAction(() => renameItem(focusedItem))"><span>重命名</span></button>
@@ -463,6 +495,10 @@ export default {
     showContextMenu: false,
     showNewFolderDialog: false,
     showRenameDialog: false,
+    showShareDialog: false,
+    shareTarget: null,
+    /** 分享有效期（天）；"0" 表示永久 */
+    shareExpiry: "7",
     showCompressDialog: false,
     compressName: "",
     compressSources: [],
@@ -1637,6 +1673,49 @@ export default {
       }
     },
 
+    /* ---------------- 分享（可选有效期） ---------------- */
+
+    openShareDialog(item) {
+      if (!item) return;
+      const key = normalizePath(item.key);
+      if (!key) {
+        this.showNotice("根目录不能单独分享，请对具体的文件或文件夹操作", "error");
+        return;
+      }
+      this.shareTarget = item;
+      this.shareExpiry = "7";
+      this.formError = "";
+      this.showShareDialog = true;
+    },
+
+    closeShareDialog() {
+      this.showShareDialog = false;
+      this.shareTarget = null;
+      this.formError = "";
+    },
+
+    async confirmShare() {
+      const item = this.shareTarget;
+      if (!item) return;
+      const days = Number(this.shareExpiry);
+      const expiresInDays = Number.isInteger(days) && days > 0 ? days : null;
+      try {
+        const share = await createShare(normalizePath(item.key), { expiresInDays });
+        const link = share.absoluteUrl || share.url;
+        if (!link) {
+          this.formError = "服务端没有返回分享链接";
+          return;
+        }
+        const ok = await copyTextToClipboard(link);
+        this.closeShareDialog();
+        const label = expiresInDays ? `有效期 ${expiresInDays} 天` : "永久有效";
+        if (ok) this.showNotice(`分享链接已复制（${label}）`, "success");
+        else this.showNotice(`复制失败，链接：${link}`, "error");
+      } catch (error) {
+        this.formError = `创建分享失败：${errorMessage(error)}`;
+      }
+    },
+
     /* ---------------- 在线压缩 / 解压 ---------------- */
 
     isZipFile(item) {
@@ -2199,6 +2278,18 @@ export default {
   margin: 8px 0 0;
   color: dimgray;
   font-size: 0.8em;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.form-label {
+  color: dimgray;
+  font-size: 0.82em;
 }
 
 .form-error {

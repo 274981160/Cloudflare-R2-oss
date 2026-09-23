@@ -10,6 +10,9 @@
 import {
   classifyJsonText,
   detectJsonIndent,
+  guessMimeFromName,
+  isThumbnailableItem,
+  keyThumbnailDigest,
   prettyJsonText,
   splitBom,
   stripJsonComments,
@@ -97,7 +100,20 @@ check("带 BOM 的严格 JSON", classifyJsonText(withBom), "valid");
 check("语法错误", classifyJsonText('{"a": }'), "invalid");
 check("空内容", classifyJsonText("   "), "empty");
 
-section("7. 注释剥离（仅用于判定，不写回文件）");
+section("7. 缩略图辅助（给已有图片补缩略图用）");
+const digestA = keyThumbnailDigest("_th/via-webdav.png");
+check("路径摘要稳定（同 key 同摘要）", digestA, keyThumbnailDigest("_th/via-webdav.png"));
+check("不同路径不同摘要", digestA !== keyThumbnailDigest("_th/other.png"), true);
+check("摘要是 32 位十六进制", /^[0-9a-f]{32}$/.test(digestA), true);
+check("空路径返回空串", keyThumbnailDigest(""), "");
+check("png + octet-stream 可缩略", isThumbnailableItem("a.png", "application/octet-stream"), true);
+check("大写扩展名也能识别", isThumbnailableItem("a.JPG", ""), true);
+check("mp4 / pdf 可缩略", isThumbnailableItem("a.mp4", "") && isThumbnailableItem("b.pdf", ""), true);
+check("文本不可缩略", isThumbnailableItem("a.txt", "text/plain"), false);
+check("按扩展名猜 MIME", guessMimeFromName("a.jpeg") + "|" + guessMimeFromName("a.mp4"), "image/jpeg|video/mp4");
+check("猜不出的返回空串", guessMimeFromName("a.unknown"), "");
+
+section("8. 注释剥离（仅用于判定，不写回文件）");
 check("剥离行注释", stripJsonComments('{"a":1//x\n}').includes("//"), false);
 check("剥离块注释", stripJsonComments('{/*x*/"a":1}').includes("/*"), false);
 check("字符串里的 // 不当注释", stripJsonComments('{"u":"http://x"}').includes("http://x"), true);

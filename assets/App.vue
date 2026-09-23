@@ -422,6 +422,7 @@ import Shares from "./Shares.vue";
 import PreviewOverlay from "./PreviewOverlay.vue";
 import {
   ApiError,
+  apiFetch,
   basename,
   clearAuth,
   copyKey,
@@ -429,21 +430,28 @@ import {
   createArchive,
   createFolder as createFolderRequest,
   createShare,
+  describeResponseError,
   dirname,
   downloadKey,
   downloadZip,
   duplicateName,
   errorMessage,
   extractArchive,
+  forgetThumbnail,
   formatDate,
   formatSize,
+  generateThumbnail,
+  guessMimeFromName,
   isImageFile,
   isTextFile,
+  isThumbnailableItem,
   joinKey,
+  keyThumbnailDigest,
   listDirectory,
   loadThumbnail,
   moveKey,
   normalizePath,
+  putThumbnailAs,
   rawUrl,
   removeKey,
   setUnauthorizedHandler,
@@ -453,6 +461,9 @@ import {
   uploadWithThumbnail,
   whoami as fetchWhoami,
 } from "/assets/main.mjs";
+
+/** 补缩略图时单个文件的大小上限：再大就不值得为了缩略图下载整份原图 */
+const MAX_THUMBNAIL_SOURCE = 25 * 1024 * 1024;
 
 const FOLDER_ICON =
   "https://cdnjs.cloudflare.com/ajax/libs/material-design-icons/4.0.0/png/file/folder/materialicons/36dp/2x/baseline_folder_black_36dp.png";
@@ -554,6 +565,14 @@ export default {
     manageKeys() {
       const permissions = Array.isArray(this.profile.permissions) ? this.profile.permissions : [];
       return this.profile.authenticated === true && permissions.indexOf("*") !== -1;
+    },
+
+    /** 当前目录里「能补缩略图但还没有」的文件（决定菜单项是否出现） */
+    thumbMissing() {
+      return this.files.filter((file) => {
+        if (!isThumbnailableItem(file.name, file.contentType)) return false;
+        return !thumbnailDigest(file.thumbnail);
+      });
     },
 
     /** 当前目录里的图片（顺序与列表一致），供预览左右切换 */
@@ -665,6 +684,9 @@ export default {
       if (this.manageKeys) items.push({ text: "API 密钥" });
       // 分享是普通功能，任何已登录账号都能管理自己创建的分享
       if (this.profile.authenticated) items.push({ text: "分享管理" });
+      if (this.profile.authenticated && this.thumbMissing.length) {
+        items.push({ text: `生成缩略图（${this.thumbMissing.length}）` });
+      }
       items.push({ text: this.profile.authenticated ? "退出登录" : "登录" });
       return items;
     },
@@ -1020,10 +1042,17 @@ export default {
      * 缓存由 main.mjs 维护（同一摘要只请求一次，失败也记住），这里只负责把
      * 结果落到响应式数据上；取不到就留空串，MimeIcon 会自动回退到 MIME 图标。
      */
-    /** 该项的缩略图摘要（没有则空串），写进 data-thumb 供观察器读取 */
+    /**
+     * 该项的缩略图摘要：优先后端写在元数据里的（网页上传时生成），
+     * 没有就按文件路径推导——用 WebDAV / 手机文件管理器传上来的图片走这条。
+     */
     thumbDigestOf(item) {
-      return thumbnailDigest(item && item.thumbnail) || "";
+      const fromMeta = thumbnailDigest(item && item.thumbnail);
+      if (fromMeta) return fromMeta;
+      if (!item || !isThumbnailableItem(item.name, item.contentType)) return "";
+      return keyThumbnailDigest(item.key);
     },
+
 
     /**
      * 只给「进入视口」的行加载缩略图。
@@ -1047,6 +1076,108 @@ export default {
           this._thumbObserver.observe(node);
         }
       });
+    },
+
+    /**
+     * 给当前目录里「还没有缩略图」的图片补缩略图。
+     *
+     * 背景：缩略图原本只在上传时生成并写进文件元数据，于是用 WebDAV / 手机文件
+     * 管理器传上来的图片永远没有缩略图。这里在浏览器里就地生成（canvas 缩放），
+     * 再按「由文件路径推导的摘要」存回网盘缩略图目录——不改原文件、不重传原图
+     * （R2 没有单独的更新元数据接口）。
+     *
+     * 代价是要把原图下载一次（手机上耗流量），所以做成显式动作 + 进度提示，
+     * 并跳过过大的文件。
+     */
+    async generateMissingThumbnails() {
+      if (!this.profile.authenticated) {
+        this.showNotice("需要登录后才能生成缩略图", "error");
+        return;
+      }
+      const targets = this.thumbMissing.slice();
+      if (!targets.length) {
+        this.showNotice("当前目录的文件都已有缩略图", "success");
+        return;
+      }
+      if (
+        !window.confirm(
+          `为当前目录的 ${targets.length} 个文件生成缩略图吗？\n` +
+            `需要下载原图（手机上会消耗流量，建议在 Wi-Fi 下进行），` +
+            `生成的缩略图会存到网盘，之后打开就很快了。`
+        )
+      ) {
+        return;
+      }
+
+      let done = 0;
+      let failed = 0;
+      let skipped = 0;
+      let processed = 0;
+
+      for (const file of targets) {
+        processed += 1;
+        if (Number(file.size) > MAX_THUMBNAIL_SOURCE) {
+          skipped += 1;
+          continue;
+        }
+        this.showNotice(
+          `正在生成缩略图 ${processed}/${targets.length}：${file.name}`,
+          "info"
+        );
+        try {
+          const response = await apiFetch(rawUrl(file.key), { cache: "no-store" });
+          if (!response.ok) {
+            throw new ApiError(
+              await describeResponseError(response),
+              response.status,
+              file.key
+            );
+          }
+          let blob = await response.blob();
+          // 内容类型不可靠（WebDAV 上传常见 octet-stream）时按扩展名补一个，
+          // 否则 canvas 那条分支不知道该怎么解码
+          const type = String(blob.type || "").split(";")[0].trim().toLowerCase();
+          if (!type || type === "application/octet-stream") {
+            const guessed = guessMimeFromName(file.name);
+            if (guessed) {
+              try {
+                blob = blob.slice(0, blob.size, guessed);
+              } catch (error) {
+                /* 重建失败就用原 Blob */
+              }
+            }
+          }
+          const thumbnail = await generateThumbnail(blob);
+          if (!thumbnail) {
+            failed += 1;
+            continue;
+          }
+          const digest = keyThumbnailDigest(file.key);
+          await putThumbnailAs(digest, thumbnail);
+          this.resetThumbnail(digest);
+          done += 1;
+        } catch (error) {
+          failed += 1;
+          console.warn("生成缩略图失败", file.key, error);
+        }
+      }
+
+      const parts = [`已生成 ${done} 个缩略图`];
+      if (skipped) parts.push(`跳过 ${skipped} 个过大文件`);
+      if (failed) parts.push(`失败 ${failed} 个`);
+      this.showNotice(parts.join("，"), failed ? "error" : "success");
+    },
+
+    /** 补完缩略图后清掉「404 已缓存」的记录，让列表重新去取 */
+    resetThumbnail(digest) {
+      if (!digest) return;
+      forgetThumbnail(digest);
+      if (this.thumbnailUrls[digest] !== undefined) {
+        const next = Object.assign({}, this.thumbnailUrls);
+        delete next[digest];
+        this.thumbnailUrls = next;
+      }
+      this.observeThumbnails();
     },
 
     /** 加载单个缩略图（同一摘要不会重复请求） */
@@ -1084,9 +1215,8 @@ export default {
 
     /** 列表里 `<img src>` 用的地址；返回空串时 MimeIcon 回退到 MIME 图标 */
     thumbnailSrc(item) {
-      const digest = thumbnailDigest(item && item.thumbnail);
-      if (!digest) return "";
-      return this.thumbnailUrls[digest] || "";
+      const digest = this.thumbDigestOf(item);
+      return digest ? this.thumbnailUrls[digest] || "" : "";
     },
 
     /* ---------------- 打开 / 预览 / 下载 ---------------- */
@@ -1994,6 +2124,7 @@ export default {
         default:
           break;
       }
+      if (/^生成缩略图（\d+）$/.test(text)) this.generateMissingThumbnails();
     },
 
     showNotice(text, type) {

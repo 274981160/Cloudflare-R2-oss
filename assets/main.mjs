@@ -1862,6 +1862,62 @@ export function prettyJsonText(source, options) {
   return { text: result, changed: true };
 }
 
+/**
+ * 由文件路径推导出一个稳定的缩略图摘要（32 位十六进制）。
+ *
+ * 为什么需要它：缩略图目前是「上传时生成，摘要写在原文件的自定义元数据里」，
+ * 于是用 WebDAV / 手机文件管理器上传的图片**永远没有缩略图**。
+ * 这里给「按路径命名缩略图」定一个确定性摘要，前端补齐缩略图时直接用它当文件名，
+ * 不需要（也没法只）改原对象的元数据——R2 没有单独的「更新元数据」接口。
+ *
+ * 该摘要只用于命名，属于内部约定：碰撞概率按 128 位算可忽略。
+ */
+export function keyThumbnailDigest(key) {
+  const text = String(key == null ? "" : key);
+  if (!text) return "";
+  const seeds = [0x811c9dc5, 0x01000193, 0x9e3779b9, 0x85ebca6b];
+  let out = "";
+  for (const seed of seeds) {
+    let hash = seed >>> 0;
+    for (let index = 0; index < text.length; index++) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    out += hash.toString(16).padStart(8, "0");
+  }
+  return out;
+}
+
+/** 列表项能不能有缩略图：先看 MIME，再按扩展名兜底（列表里的内容类型常是 octet-stream） */
+export function isThumbnailableItem(name, contentType) {
+  const type = String(contentType || "").split(";")[0].trim().toLowerCase();
+  if (type.startsWith("image/") || type === "video/mp4" || type === "application/pdf") {
+    return true;
+  }
+  const extension = fileExtension(name).replace(/^\./, "").toLowerCase();
+  if (!extension) return false;
+  if (IMAGE_EXTENSIONS.indexOf(extension) !== -1) return true;
+  return extension === "mp4" || extension === "pdf";
+}
+
+/** 按扩展名猜 MIME（给内容类型不可靠的文件用，生成缩略图前要它来选解码方式） */
+export function guessMimeFromName(name) {
+  const extension = fileExtension(name).replace(/^\./, "").toLowerCase();
+  const table = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    jfif: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    avif: "image/avif",
+    bmp: "image/bmp",
+    mp4: "video/mp4",
+    pdf: "application/pdf",
+  };
+  return table[extension] || "";
+}
+
 /** 可按图片预览的扩展名（用于 MIME 不可靠时兜底判断） */
 const IMAGE_EXTENSIONS = [
   "png", "jpg", "jpeg", "jfif", "gif", "webp", "avif", "bmp", "ico",
@@ -2284,6 +2340,31 @@ export function ensureOk(result, url) {
  * @param {Blob} blob
  * @returns {Promise<string>} sha1 十六进制摘要
  */
+/**
+ * 把生成好的缩略图按**指定摘要**存进缩略图目录（用于给已有文件补缩略图）。
+ * 写 `_$flaredrive$/thumbnails/` 对任何已登录账号都允许。
+ */
+export async function putThumbnailAs(digest, blob) {
+  const value = thumbnailDigest(digest);
+  if (!value) throw new ApiError("缩略图摘要非法", 0, "");
+  const url = webdavPath(`${THUMBNAIL_PREFIX}${value}.png`);
+  const result = await xhrRequest("PUT", url, blob, {
+    headers: { "content-type": "image/png" },
+  });
+  ensureOk(result, url);
+  return value;
+}
+
+/**
+ * 忘掉某个摘要的会话缓存。
+ * 缩略图 404 也会被缓存成 null，补生成之后必须清掉，否则永远不显示。
+ */
+export function forgetThumbnail(digest) {
+  const value = thumbnailDigest(digest);
+  if (!value) return;
+  thumbnailCache().delete(value);
+}
+
 export async function uploadThumbnail(blob) {
   const digest = await blobDigest(blob);
   const url = webdavPath(`${THUMBNAIL_PREFIX}${digest}.png`);

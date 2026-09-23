@@ -1461,6 +1461,8 @@ export default {
       this.uploading = true;
       let aborted = false;
       let createdDirs = 0;
+      /** 本次上传的压缩包，传完后可以问一句「要解压吗」（手机选不了文件夹，这条路最实用） */
+      const uploadedZips = [];
       // 外层循环：上传过程中可能又有新任务入队（例如空目录阶段又拖入了文件）
       while (!aborted && (this.uploadQueue.length || this.uploadDirQueue.length)) {
         while (this.uploadQueue.length) {
@@ -1485,6 +1487,9 @@ export default {
               aborted = true;
               break;
             }
+          }
+          if (/\.zip$/i.test(file.name || "")) {
+            uploadedZips.push({ key, name: file.name });
           }
           this.uploadFinishedCount++;
         }
@@ -1531,6 +1536,29 @@ export default {
         this.showNotice("上传完成", "success");
       }
       await this.fetchFiles();
+      if (!aborted && uploadedZips.length) {
+        await this.offerExtractUploaded(uploadedZips);
+      }
+    },
+
+    /**
+     * 刚上传了压缩包 → 问一句要不要就地解压。
+     * 手机浏览器选不了整个文件夹，先打包上传再解压是最实际的替代路径。
+     */
+    async offerExtractUploaded(zips) {
+      const list = Array.isArray(zips) ? zips.filter((zip) => zip && zip.key) : [];
+      if (!list.length) return;
+      const names = list.map((zip) => zip.name);
+      const question =
+        list.length === 1
+          ? `刚上传的「${names[0]}」是压缩包，要解压到当前目录吗？`
+          : `刚上传了 ${list.length} 个压缩包，要全部解压到当前目录吗？\n${names
+              .slice(0, 5)
+              .join("、")}${names.length > 5 ? " 等" : ""}`;
+      if (!window.confirm(`${question}\n\n（遇到同名文件会再问一次，默认跳过不动原文件）`)) return;
+      for (const zip of list) {
+        await this.extractInto(zip.key, zip.name, this.cwd, { skipFirstConfirm: true });
+      }
     },
 
     /* ---------------- 新建文件夹 ---------------- */
@@ -1664,44 +1692,62 @@ export default {
 
     async extractItem(item) {
       if (!item || item.type === "folder") return;
-      if (
-        !window.confirm(
-          `确定把「${item.name}」解压到当前目录吗？将创建 ${stripExtension(item.name)}/ 文件夹。`
-        )
-      ) {
-        return;
-      }
       const base = stripExtension(item.name || "解压") || "解压";
-      const targetDir = joinKey(this.cwd, base);
+      await this.extractInto(item.key, item.name, joinKey(this.cwd, base), {
+        targetLabel: `新建的「${base}」文件夹`,
+      });
+    },
+
+    /**
+     * 解压一个 zip 的完整流程（右键菜单与「上传后询问」共用）：
+     * 1) 可选先确认一次；
+     * 2) 问后端目标里有没有同名文件；
+     * 3) 有冲突就弹窗让用户选「覆盖 / 跳过」，默认跳过，绝不静默覆盖；
+     * 4) 解压并把写入数、跳过数、失败数如实告诉用户。
+     *
+     * @param {string} zipKey
+     * @param {string} zipName 展示用文件名
+     * @param {string} targetDir 解压到的目录 key（当前目录用 cwd 传入）
+     * @param {{skipFirstConfirm?: boolean, targetLabel?: string}} [options]
+     */
+    async extractInto(zipKey, zipName, targetDir, options) {
+      const settings = options || {};
+      const name = zipName || basename(zipKey) || "压缩包";
+      const label = settings.targetLabel || (targetDir ? `「${targetDir}」` : "当前目录");
+      if (!settings.skipFirstConfirm) {
+        if (!window.confirm(`确定把「${name}」解压到${label}吗？`)) return false;
+      }
+
       try {
-        // 先问后端目标里有没有同名文件，再让用户决定「跳过」还是「覆盖」，
-        // 默认跳过，绝不静默覆盖已有文件
-        this.showNotice(`正在检查「${item.name}」里的同名文件...`, "info");
-        const pre = await extractArchive(item.key, targetDir, { mode: "check" });
+        // 先问后端目标里有没有同名文件，再让用户决定「跳过」还是「覆盖」
+        this.showNotice(`正在检查「${name}」里的同名文件...`, "info");
+        const pre = await extractArchive(zipKey, targetDir, { mode: "check" });
         let mode = "skip";
         const conflictCount = Number(pre && pre.conflictCount) || 0;
         if (conflictCount > 0) {
           const preview = (pre.conflicts || []).slice(0, 5).join("、");
           const more = conflictCount > 5 ? ` 等 ${conflictCount} 个` : "";
           const overwrite = window.confirm(
-            `目标文件夹里已有 ${conflictCount} 个同名文件：\n${preview}${more}\n\n` +
+            `目标里已有 ${conflictCount} 个同名文件：\n${preview}${more}\n\n` +
               `点「确定」= 用压缩包里的内容覆盖它们\n` +
               `点「取消」= 跳过这些同名文件，保留现有文件（默认）`
           );
           mode = overwrite ? "overwrite" : "skip";
         }
 
-        this.showNotice(`正在解压「${item.name}」...`, "info");
-        const result = await extractArchive(item.key, targetDir, { mode });
+        this.showNotice(`正在解压「${name}」...`, "info");
+        const result = await extractArchive(zipKey, targetDir, { mode });
         const failed = Array.isArray(result.errors) ? result.errors.length : 0;
         const skipped = Number(result.skipped) || 0;
-        const parts = [`解压完成，共 ${result.files || 0} 个文件`];
+        const parts = [`「${name}」解压完成，共 ${result.files || 0} 个文件`];
         if (skipped) parts.push(`跳过同名 ${skipped} 个`);
         if (failed) parts.push(`失败 ${failed} 个（${result.errors[0]}）`);
         this.showNotice(parts.join("，"), failed ? "error" : "success");
         await this.fetchFiles();
+        return true;
       } catch (error) {
         this.showNotice(`解压失败：${errorMessage(error)}`, "error");
+        return false;
       }
     },
 

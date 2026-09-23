@@ -89,6 +89,27 @@ input[type="search"] {
   justify-content: center;
 }
 
+/* 多选模式下的勾选圈：未选中是空心圈，选中后填充并显示对勾 */
+.file-check {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-right: 2px;
+  border-radius: 50%;
+  border: 2px solid #c4c9d2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.file-item.selected .file-check {
+  background-color: #0b5fa5;
+  border-color: #0b5fa5;
+  color: #fff;
+}
+
 .file-name,
 .contextmenu-filename {
   white-space: nowrap;

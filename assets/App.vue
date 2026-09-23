@@ -56,7 +56,7 @@
 
     <p v-if="loginHint" class="page-hint" v-text="loginHint"></p>
 
-    <ul class="file-list" @click="clearSelection">
+    <ul class="file-list" @click="onBackgroundClick">
       <li v-if="cwd">
         <div class="file-item" tabindex="0" @click.stop="goUp" @contextmenu.prevent>
           <div class="file-icon">
@@ -72,10 +72,24 @@
           class="file-item"
           :class="{ selected: isSelected(folder.key) }"
           tabindex="0"
-          @click.stop="toggleSelect(folder)"
+          @pointerdown="onRowPointerDown($event, folder)"
+          @pointerup="onRowPointerUp"
+          @pointercancel="onRowPointerUp"
+          @pointerleave="cancelLongPress"
+          @pointermove="onRowPointerMove($event)"
+          @click.stop="onRowClick(folder, $event)"
           @dblclick.stop="openItem(folder)"
+          @keydown.enter.prevent="onRowEnter($event, folder)"
           @contextmenu.prevent="openContextMenu(folder)"
         >
+          <span v-if="selectionMode" class="file-check" aria-hidden="true">
+            <svg viewBox="0 0 448 512" width="12" height="12">
+              <path
+                fill="currentColor"
+                d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"
+              />
+            </svg>
+          </span>
           <div class="file-icon">
             <img :src="folderIcon" width="36" height="36" alt="文件夹" />
           </div>
@@ -101,10 +115,24 @@
           class="file-item"
           :class="{ selected: isSelected(file.key) }"
           tabindex="0"
-          @click.stop="toggleSelect(file)"
+          @pointerdown="onRowPointerDown($event, file)"
+          @pointerup="onRowPointerUp"
+          @pointercancel="onRowPointerUp"
+          @pointerleave="cancelLongPress"
+          @pointermove="onRowPointerMove($event)"
+          @click.stop="onRowClick(file, $event)"
           @dblclick.stop="openItem(file)"
+          @keydown.enter.prevent="onRowEnter($event, file)"
           @contextmenu.prevent="openContextMenu(file)"
         >
+          <span v-if="selectionMode" class="file-check" aria-hidden="true">
+            <svg viewBox="0 0 448 512" width="12" height="12">
+              <path
+                fill="currentColor"
+                d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"
+              />
+            </svg>
+          </span>
           <MimeIcon :content-type="file.contentType" :thumbnail="thumbnailSrc(file)" />
           <div class="file-body">
             <div class="file-name" v-text="file.name"></div>
@@ -136,14 +164,14 @@
       <span v-text="emptyText"></span>
     </div>
 
-    <div v-if="selectedItems.length" class="selection-toolbar">
+    <div v-if="selectedItems.length || selectionMode" class="selection-toolbar">
       <span class="selection-count" v-text="`已选 ${selectedItems.length} 项`"></span>
       <button @click="downloadSelected">下载</button>
       <button v-if="canWrite" @click="openCompressDialog(selectedItems)">压缩为zip</button>
       <button v-if="canWrite" @click="moveSelected">移动</button>
       <button v-if="canWrite" @click="copySelected">复制</button>
       <button v-if="canWrite" class="danger" @click="removeSelected">删除</button>
-      <button @click="clearSelection">取消选择</button>
+      <button @click="finishSelection" v-text="selectionMode ? '完成' : '取消选择'"></button>
     </div>
 
     <button
@@ -232,6 +260,9 @@
             <button @click="runAction(() => openItem(focusedItem))"><span>打开</span></button>
           </li>
           <li>
+            <button @click="runAction(() => enterSelectionMode(focusedItem))"><span>多选</span></button>
+          </li>
+          <li>
             <button @click="runAction(() => downloadItem(focusedItem))">
               <span>下载 (zip)</span>
             </button>
@@ -260,6 +291,9 @@
         <ul v-else-if="focusedItem" class="contextmenu-list">
           <li>
             <button @click="runAction(() => preview(focusedItem))"><span>预览</span></button>
+          </li>
+          <li>
+            <button @click="runAction(() => enterSelectionMode(focusedItem))"><span>多选</span></button>
           </li>
           <li v-if="isTextItem(focusedItem)">
             <button @click="runAction(() => openEditor(focusedItem))"><span>编辑</span></button>
@@ -446,6 +480,12 @@ export default {
     moveTargets: [],
     clipboard: [],
     selectedKeys: [],
+    /**
+     * 触屏多选模式：手机端「单击=打开」以后，需要一个显式模式来多选
+     * （⋮ 菜单或长按菜单的「多选」进入，选完点「完成」退出）。
+     * 桌面端不依赖它：单击仍然直接加/减选中项。
+     */
+    selectionMode: false,
     dragging: false,
     notice: "",
     noticeType: "info",
@@ -569,6 +609,8 @@ export default {
 
     menuItems() {
       const items = [{ text: "名称A-Z" }, { text: "大小↑" }, { text: "大小↓" }];
+      // 手机端单击=打开，多选需要从这里进（桌面端也可以用来批量勾选）
+      if (this.files.length || this.folders.length) items.push({ text: "多选" });
       if (this.canWrite && this.clipboard.length) items.push({ text: "粘贴" });
       if (this.manageKeys) items.push({ text: "API 密钥" });
       // 分享是普通功能，任何已登录账号都能管理自己创建的分享
@@ -586,6 +628,7 @@ export default {
     cwd: {
       handler() {
         this.selectedKeys = [];
+        this.selectionMode = false;
         this.syncLocation();
         if (this.initialized) this.fetchFiles();
       },
@@ -603,10 +646,27 @@ export default {
     this.init();
   },
 
+  mounted() {
+    /**
+     * 触屏长按弹出菜单后，松手时浏览器会补发一次 click，它会落在菜单遮罩上
+     * 把刚打开的菜单立刻关掉。这里在捕获阶段按时间窗吞掉这次 click——
+     * 纯时间判断，不用任何需要手动复位的标记，不会影响后续点击。
+     */
+    this._onCaptureClick = (event) => {
+      if (this._suppressClickUntil && Date.now() < this._suppressClickUntil) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("click", this._onCaptureClick, true);
+  },
+
   beforeUnmount() {
     window.removeEventListener("popstate", this._onPopState);
+    document.removeEventListener("click", this._onCaptureClick, true);
     setUnauthorizedHandler(null);
     if (this._noticeTimer) clearTimeout(this._noticeTimer);
+    this.cancelLongPress();
   },
 
   methods: {
@@ -747,6 +807,133 @@ export default {
     },
 
     clearSelection() {
+      this.selectedKeys = [];
+    },
+
+    /* ---------------- 单击语义：触屏打开，桌面选中 ---------------- */
+
+    /**
+     * 记下最后一次按下用的是什么指针。
+     * 只存「类型 + 时间」，不做任何粘住的标记——上次就是粘住的标记
+     * 把你多选时的第一下点击吃掉了，这里改用时间窗判断，过期自动失效。
+     */
+    notePointer(event) {
+      if (!event) return;
+      this._lastPointer = { type: event.pointerType || "mouse", time: Date.now() };
+    },
+
+    /**
+     * 行按下：记下指针类型，并在触屏上启动长按计时（480ms 开操作菜单）。
+     *
+     * 为什么要自己计时：iOS Safari 长按不派发 contextmenu；同时单击=打开之后，
+     * 长按松手时浏览器补发的那次 click 有可能把文件也打开，先开菜单能把这次
+     * click 用时间窗挡掉（onRowClick 里判断 800ms）。
+     * 手指移动超过 10px（滚动）或抬起即取消，不影响正常滑动。
+     */
+    onRowPointerDown(event, item) {
+      this.notePointer(event);
+      if (!event || event.pointerType === "mouse") return;
+      this.cancelLongPress();
+      this._pressStart = { x: event.clientX, y: event.clientY };
+      this._longPressTimer = setTimeout(() => {
+        this._longPressTimer = 0;
+        this._pressStart = null;
+        this._longPressAt = Date.now();
+        this.openContextMenu(item);
+      }, 480);
+    },
+
+    /**
+     * 行松手：如果这次是「长按」，就在松手后的极短窗口（150ms）里吞掉浏览器
+     * 补发的那一次 click——它通常会落在菜单遮罩上把菜单关掉，或误触菜单项。
+     * 窗口很短，所以菜单打开后你正常点菜单项不会被影响。
+     */
+    onRowPointerUp() {
+      if (this._longPressAt && Date.now() - this._longPressAt < 1200) {
+        this._suppressClickUntil = Date.now() + 150;
+      }
+      this._longPressAt = 0;
+      this.cancelLongPress();
+    },
+
+    onRowPointerMove(event) {
+      if (!this._pressStart || !event) return;
+      const movedX = Math.abs(event.clientX - this._pressStart.x);
+      const movedY = Math.abs(event.clientY - this._pressStart.y);
+      if (movedX > 10 || movedY > 10) this.cancelLongPress();
+    },
+
+    cancelLongPress() {
+      if (this._longPressTimer) {
+        clearTimeout(this._longPressTimer);
+        this._longPressTimer = 0;
+      }
+      this._pressStart = null;
+    },
+
+    /** 这一次交互是不是触屏/触控笔；拿不到指针信息时按设备能力兜底 */
+    isTouchInteraction() {
+      const last = this._lastPointer;
+      if (last && Date.now() - last.time < 1500) {
+        return last.type === "touch" || last.type === "pen";
+      }
+      return (
+        typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(hover: none) and (pointer: coarse)").matches
+      );
+    },
+
+    /**
+     * 行单击：
+     * - 长按/右键刚弹过菜单（800ms 内）→ 忽略浏览器补发的那次 click，避免又打开一次
+     * - 多选模式 → 勾选/取消勾选
+     * - 带 Ctrl/Cmd/Shift → 保持「加选/减选」的老习惯
+     * - 触屏轻触 → 打开（文件夹进入 / 文件预览）
+     * - 鼠标 → 与原来完全一致：加/减选中项
+     */
+    onRowClick(item, event) {
+      if (!item) return;
+      // 兜底：菜单刚弹出的一瞬间（250ms）内忽略行点击；正常点菜单项不受影响
+      if (this._menuOpenedAt && Date.now() - this._menuOpenedAt < 250) return;
+      if (this.selectionMode) {
+        this.toggleSelect(item);
+        return;
+      }
+      const modifier = !!(event && (event.ctrlKey || event.metaKey || event.shiftKey));
+      if (!modifier && this.isTouchInteraction()) {
+        this.openItem(item);
+        return;
+      }
+      this.toggleSelect(item);
+    },
+
+    /** 键盘回车打开当前行（只在行本身获得焦点时触发，避免和行内按钮的 Enter 打架） */
+    onRowEnter(event, item) {
+      if (!item) return;
+      if (event && event.target !== event.currentTarget) return;
+      this.openItem(item);
+    },
+
+    /** 点空白处：清空选择，并退出多选模式 */
+    onBackgroundClick() {
+      this.selectedKeys = [];
+      this.selectionMode = false;
+    },
+
+    /** 底部工具条右侧按钮：多选模式下是「完成」，否则是原来的「取消选择」 */
+    finishSelection() {
+      this.selectedKeys = [];
+      this.selectionMode = false;
+    },
+
+    enterSelectionMode(item) {
+      this.selectionMode = true;
+      if (item && !this.isSelected(item.key)) this.toggleSelect(item);
+    },
+
+    exitSelectionMode() {
+      this.selectionMode = false;
       this.selectedKeys = [];
     },
 
@@ -1532,6 +1719,8 @@ export default {
     openContextMenu(item) {
       this.focusedItem = item;
       this.showContextMenu = true;
+      // 触屏长按后浏览器还会补发一次 click，记下时间让 onRowClick 忽略它
+      this._menuOpenedAt = Date.now();
     },
 
     runAction(action) {
@@ -1550,6 +1739,9 @@ export default {
           break;
         case "大小↓":
           this.order = "size-desc";
+          break;
+        case "多选":
+          this.enterSelectionMode();
           break;
         case "粘贴":
           this.pasteFile();

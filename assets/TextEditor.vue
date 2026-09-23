@@ -17,6 +17,7 @@
             v-text="language.label"
           ></span>
           <span v-if="showStats" class="editor-stat" v-text="statText"></span>
+          <span v-if="showStats" class="editor-stat" v-text="cursorText"></span>
           <span
             v-if="showStats && jsonStatus"
             class="editor-json"
@@ -25,6 +26,38 @@
             v-text="jsonStatus"
           ></span>
           <span class="editor-toolbar-spacer"></span>
+          <button
+            v-if="showStats"
+            type="button"
+            class="editor-tool"
+            :class="{ active: !wordWrap }"
+            :aria-pressed="!wordWrap"
+            aria-label="切换自动换行"
+            title="自动换行：长行折行显示，关闭后改为横向滚动"
+            @click="toggleWrap"
+          >
+            <span v-text="wordWrap ? '自动换行' : '不换行'"></span>
+          </button>
+          <button
+            v-if="showStats"
+            type="button"
+            class="editor-tool"
+            aria-label="缩小字号"
+            title="缩小字号"
+            @click="adjustFontSize(-1)"
+          >
+            <span>A−</span>
+          </button>
+          <button
+            v-if="showStats"
+            type="button"
+            class="editor-tool"
+            aria-label="放大字号"
+            title="放大字号"
+            @click="adjustFontSize(1)"
+          >
+            <span>A+</span>
+          </button>
           <button
             type="button"
             class="editor-undo"
@@ -47,10 +80,11 @@
             v-if="canFormat"
             type="button"
             class="editor-format"
-            aria-label="格式化"
+            aria-label="整理缩进"
+            title="整理缩进：重排空白，保留注释、数字与键的原样"
             @click="formatJson"
           >
-            <span>格式化</span>
+            <span>整理缩进</span>
           </button>
           <button
             v-if="canSave"
@@ -107,6 +141,36 @@
             />
             <span>区分大小写</span>
           </label>
+          <input
+            type="text"
+            class="editor-replaceinput"
+            name="editor-replace"
+            aria-label="替换为"
+            placeholder="替换为…"
+            autocomplete="off"
+            :value="replaceText"
+            @input="onReplaceInput"
+            @keydown.enter.prevent="replaceOne()"
+            @keydown.esc.prevent="handleEscape"
+          />
+          <button
+            type="button"
+            class="editor-nav"
+            aria-label="替换当前匹配"
+            :disabled="!matchCount"
+            @click="replaceOne()"
+          >
+            <span>替换</span>
+          </button>
+          <button
+            type="button"
+            class="editor-nav"
+            aria-label="全部替换"
+            :disabled="!matchCount"
+            @click="replaceAll()"
+          >
+            <span>全部替换</span>
+          </button>
         </div>
 
         <div class="editor-content">
@@ -136,11 +200,12 @@
               </button>
             </div>
 
-            <div v-else class="editor-body">
+            <div v-else class="editor-body" :class="{ nowrap: !wordWrap }">
               <pre
                 ref="highlight"
                 class="editor-layer editor-highlight"
                 aria-hidden="true"
+                :style="layerStyle"
                 v-html="highlightHtml"
               ></pre>
               <textarea
@@ -152,8 +217,13 @@
                 autocapitalize="off"
                 autocomplete="off"
                 :readonly="isReadOnly"
+                :style="layerStyle"
                 v-model="content"
                 @scroll="syncScroll"
+                @keydown="onInputKeydown"
+                @keyup="updateCursor"
+                @click="updateCursor"
+                @select="updateCursor"
                 @keydown.ctrl.z.exact.prevent="undo"
                 @keydown.meta.z.exact.prevent="undo"
                 @keydown.ctrl.shift.z.prevent="redo"
@@ -174,14 +244,18 @@
 import {
   ApiError,
   apiFetch,
+  classifyJsonText,
   describeResponseError,
+  detectJsonIndent,
   detectLanguage,
   downloadKey,
   errorMessage,
   formatSize,
   isTextFile,
   MAX_HIGHLIGHT_SIZE,
+  prettyJsonText,
   rawUrl,
+  splitBom,
   tokenize,
   webdavUrl,
 } from "/assets/main.mjs";
@@ -192,6 +266,10 @@ const MAX_EDIT_SIZE = 5 * 1024 * 1024;
 const MAX_EDIT_SIZE_LABEL = "5MB";
 /** 高亮层最多渲染的匹配数，避免超大文件卡死 */
 const MAX_MATCHES = 5000;
+/** 字号可调范围与默认值 */
+const FONT_SIZE_MIN = 11;
+const FONT_SIZE_MAX = 22;
+const FONT_SIZE_DEFAULT = 13;
 /** 两层共用的内边距（像素），必须与 .editor-layer 的 padding 一致 */
 const EDITOR_PADDING = 12;
 /** 除 text/* 外，按原样透传的文本类 MIME 类型 */
@@ -322,9 +400,20 @@ export default {  props: {
     caseSensitive: false,
     currentIndex: 0,
     searchFocused: false,
+    /** 替换目标文本 */
+    replaceText: "",
+    /** 自动换行开关；关闭后长行改为横向滚动 */
+    wordWrap: true,
+    /** 编辑区字号（两层必须同一字号才对得齐） */
+    fontSize: FONT_SIZE_DEFAULT,
+    /** 光标位置（1 基），显示在状态区 */
+    cursorLine: 1,
+    cursorColumn: 1,
     /** JSON 校验结果 */
     jsonValid: false,
     jsonError: "",
+    /** 内容是可解析的 JSONC（带注释/尾逗号），不算错误 */
+    jsonLoose: false,
     /**
      * 语法着色使用的文本快照（防抖更新）。
      * 显示文本永远直接用 content（打字零延迟）；只有「分词着色」这步
@@ -389,6 +478,33 @@ export default {  props: {
       return `${this.charCount} 字符 · ${this.lineCount} 行 · ${formatSize(this.itemSize)}`;
     },
 
+    /** 光标位置：与参考编辑器一致，状态区显示「行,列」 */
+    cursorText() {
+      return `第 ${this.cursorLine} 行, 第 ${this.cursorColumn} 列`;
+    },
+
+    /** 两层的行内样式：字号必须一致，否则高亮层与输入层会错位 */
+    layerStyle() {
+      return { fontSize: `${this.fontSize}px` };
+    },
+
+    /** 当前匹配总数（替换按钮的可用性依赖它） */
+    matchCount() {
+      return this.matches.length;
+    },
+
+    /**
+     * Tab 键与自动缩进使用的缩进单位：
+     * JSON 沿用文件已有风格，Python 用 4 空格，Go 用制表符，其余 2 空格。
+     */
+    indentUnit() {
+      const id = this.language.id;
+      if (id === "json") return detectJsonIndent(this.content);
+      if (id === "python") return "    ";
+      if (id === "go") return "\t";
+      return "  ";
+    },
+
     /** 语法识别：{ id, label } */
     language() {
       return detectLanguage(
@@ -423,6 +539,7 @@ export default {  props: {
     jsonStatus() {
       if (!this.isJson) return "";
       if (this.jsonError) return `JSON 错误：${this.jsonError}`;
+      if (this.jsonLoose) return "JSON 有效（含注释，可整理缩进）";
       if (this.jsonValid) return "JSON 有效";
       return "";
     },
@@ -620,6 +737,7 @@ export default {  props: {
       this.searchFocused = false;
       this.jsonValid = false;
       this.jsonError = "";
+      this.jsonLoose = false;
       if (this._hlTimer) {
         clearTimeout(this._hlTimer);
         this._hlTimer = 0;
@@ -669,6 +787,7 @@ export default {  props: {
         this.loading = false;
         this.jsonValid = false;
         this.jsonError = "";
+        this.jsonLoose = false;
         this.$nextTick(() => {
           this.tokensText = this.content;
           this.syncLayers();
@@ -724,6 +843,7 @@ export default {  props: {
       if (!this.isJson) {
         this.jsonValid = false;
         this.jsonError = "";
+        this.jsonLoose = false;
         return;
       }
       this._jsonTimer = setTimeout(() => {
@@ -736,21 +856,38 @@ export default {  props: {
       if (!this.isJson) {
         this.jsonValid = false;
         this.jsonError = "";
+        this.jsonLoose = false;
         return;
       }
       const text = this.content;
       if (!text.trim()) {
         this.jsonValid = false;
         this.jsonError = "";
+        this.jsonLoose = false;
         return;
       }
-      try {
-        JSON.parse(text);
+      // 带 BOM 的文件 JSON.parse 会直接失败，判定前先去掉（整理时再原样补回）
+      const [, body] = splitBom(text);
+      const kind = classifyJsonText(text);
+      if (kind === "valid") {
         this.jsonValid = true;
+        this.jsonLoose = false;
         this.jsonError = "";
+        return;
+      }
+      if (kind === "jsonc") {
+        // 带注释的宽松 JSON（tsconfig.json 这类）不算错误，只是提示可整理缩进
+        this.jsonValid = true;
+        this.jsonLoose = true;
+        this.jsonError = "";
+        return;
+      }
+      this.jsonLoose = false;
+      this.jsonValid = false;
+      try {
+        JSON.parse(body);
       } catch (error) {
-        this.jsonValid = false;
-        this.jsonError = this.describeJsonError(error, text);
+        this.jsonError = this.describeJsonError(error, body);
       }
     },
 
@@ -773,21 +910,29 @@ export default {  props: {
       return `${message}（第 ${line} 行第 ${column} 列）`;
     },
 
-    /** 格式化：JSON.stringify(parsed, null, 2) 重排，并标记为已修改 */
+    /**
+     * 整理缩进（JSON / JSONC）：
+     * 只重排空白——保留注释、数字写法（1.0 / 1e2 / 大整数）、重复键与字符串原文，
+     * 因此 tsconfig.json 这类带注释的文件也能整理；校验不通过就保持原样并提示。
+     */
     formatJson() {
       if (!this.isJson || this.isReadOnly) return;
-      try {
-        const parsed = JSON.parse(this.content);
-        this.content = JSON.stringify(parsed, null, 2);
-        this.jsonValid = true;
-        this.jsonError = "";
-        this.setStatus("已格式化（记得保存）", false);
-        this.$nextTick(() => this.syncLayers());
-      } catch (error) {
-        this.jsonValid = false;
-        this.jsonError = this.describeJsonError(error, this.content);
-        this.setStatus(`格式化失败：${this.jsonError}`, true);
+      const result = prettyJsonText(this.content, { indent: this.indentUnit });
+      if (result.unsafe) {
+        this.setStatus("整理缩进失败：内容校验未通过，已保持原样", true);
+        return;
       }
+      if (!result.changed) {
+        this.setStatus("当前已是整理好的缩进", false);
+        return;
+      }
+      const input = this.$refs.input;
+      const caret = input && typeof input.selectionStart === "number" ? input.selectionStart : 0;
+      const next = result.text;
+      this.applyEdit(next, Math.min(caret, next.length), Math.min(caret, next.length));
+      this.jsonValid = true;
+      this.jsonError = "";
+      this.setStatus("已整理缩进（记得保存）", false);
     },
 
     /* ---------------- 保存 ---------------- */
@@ -836,6 +981,229 @@ export default {  props: {
         event.preventDefault();
         this.handleEscape();
       }
+    },
+
+    /* ---------------- 编辑区内的键盘行为（Tab 缩进 / 回车自动缩进） ---------------- */
+
+    onInputKeydown(event) {
+      if (!event || this.isReadOnly) return;
+      // 输入法组合期间不拦截，避免破坏中文输入
+      if (event.isComposing || event.keyCode === 229) return;
+
+      if (event.key === "Tab") {
+        event.preventDefault();
+        this.indentSelection(event.shiftKey);
+        return;
+      }
+      if (event.key === "Enter" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        this.insertNewlineWithIndent(event.shiftKey);
+      }
+    },
+
+    /**
+     * 应用一次程序化编辑：写内容 → 记一步撤销 → 恢复选区。
+     * 撤销栈记的是「编辑前」的内容，所以这里改完立刻入栈，Ctrl+Z 能整体回退。
+     */
+    applyEdit(next, selectionStart, selectionEnd) {
+      const input = this.$refs.input;
+      this.content = next;
+      this.pushUndoSnapshot();
+      this.$nextTick(() => {
+        const el = this.$refs.input;
+        if (!el) return;
+        el.focus({ preventScroll: true });
+        try {
+          const start = Math.max(0, Math.min(selectionStart, next.length));
+          const end = Math.max(start, Math.min(selectionEnd, next.length));
+          el.setSelectionRange(start, end);
+        } catch (error) {
+          /* 忽略 */
+        }
+        this.syncLayers();
+        this.updateCursor();
+      });
+    },
+
+    /** Textarea 里 Tab 不再跳焦点：插入缩进；选中多行时整块缩进/反缩进 */
+    indentSelection(outdent) {
+      const input = this.$refs.input;
+      if (!input) return;
+      const unit = this.indentUnit;
+      const value = this.content;
+      const start = input.selectionStart || 0;
+      const end = input.selectionEnd || 0;
+
+      const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+      const spansMultipleLines = value.slice(start, end).indexOf("\n") !== -1;
+
+      if (!spansMultipleLines && !outdent) {
+        // 单点插入：光标处插一个缩进单位
+        const next = value.slice(0, start) + unit + value.slice(end);
+        this.applyEdit(next, start + unit.length, start + unit.length);
+        return;
+      }
+
+      // 多行（或 Shift+Tab）：对选区内每一行做缩进/反缩进
+      const blockEnd = value.indexOf("\n", end);
+      const blockEndIndex = blockEnd === -1 ? value.length : blockEnd;
+      const lines = value.slice(lineStart, blockEndIndex).split("\n");
+      let firstDelta = 0;
+      let removedFirst = 0;
+
+      const updated = lines.map((line, index) => {
+        if (!outdent) {
+          if (index === 0) firstDelta = unit.length;
+          return unit + line;
+        }
+        // 反缩进：优先去掉一个完整缩进单位，否则去掉行首空白
+        let remove = 0;
+        if (unit && line.startsWith(unit)) remove = unit.length;
+        else {
+          const match = /^[ \t]+/.exec(line);
+          remove = match ? Math.min(match[0].length, unit ? unit.length : 1) : 0;
+          if (remove === 0 && match) remove = match[0].length;
+        }
+        if (index === 0) removedFirst = remove;
+        return line.slice(remove);
+      });
+
+      const next =
+        value.slice(0, lineStart) + updated.join("\n") + value.slice(blockEndIndex);
+      const nextStart = outdent
+        ? Math.max(lineStart, start - removedFirst)
+        : start + firstDelta;
+      const nextEnd = outdent ? Math.max(nextStart, end - removedFirst) : end + unit.length * lines.length;
+      this.applyEdit(next, nextStart, nextEnd);
+    },
+
+    /**
+     * 回车自动缩进：沿用当前行的缩进；行尾是 { [ ( 时多缩一级；
+     * 若光标右侧紧跟 } ] )，则收尾行回到上一级（常见编辑器的行为）。
+     * Shift+Enter 插入裸换行，不做缩进。
+     */
+    insertNewlineWithIndent(plain) {
+      const input = this.$refs.input;
+      if (!input) return;
+      const value = this.content;
+      const start = input.selectionStart || 0;
+      const end = input.selectionEnd || 0;
+      const eol = value.indexOf("\r\n") !== -1 ? "\r\n" : "\n";
+
+      if (plain) {
+        const next = value.slice(0, start) + eol + value.slice(end);
+        this.applyEdit(next, start + eol.length, start + eol.length);
+        return;
+      }
+
+      const unit = this.indentUnit;
+      const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+      const currentLine = value.slice(lineStart, start);
+      const baseIndent = (/^[ \t]*/.exec(currentLine) || [""])[0];
+      const trimmed = currentLine.replace(/[ \t]+$/, "");
+      const opensBlock = /[{[(]$/.test(trimmed);
+      const nextChar = value.slice(end, end + 1);
+      const closesBlock = /[}\])]/.test(nextChar);
+
+      if (opensBlock && closesBlock) {
+        // 在 {} 中间回车：展开成三行，光标停在中间那行
+        const inner = baseIndent + unit;
+        const inserted = `${eol}${inner}${eol}${baseIndent}`;
+        const next = value.slice(0, start) + inserted + value.slice(end);
+        const caret = start + eol.length + inner.length;
+        this.applyEdit(next, caret, caret);
+        return;
+      }
+
+      const indent = opensBlock ? baseIndent + unit : baseIndent;
+      const inserted = eol + indent;
+      const next = value.slice(0, start) + inserted + value.slice(end);
+      const caret = start + inserted.length;
+      this.applyEdit(next, caret, caret);
+    },
+
+    /* ---------------- 显示选项：换行 / 字号 / 光标位置 ---------------- */
+
+    toggleWrap() {
+      this.wordWrap = !this.wordWrap;
+      this.$nextTick(() => this.syncLayers());
+    },
+
+    adjustFontSize(delta) {
+      const next = Math.min(
+        FONT_SIZE_MAX,
+        Math.max(FONT_SIZE_MIN, this.fontSize + delta)
+      );
+      if (next === this.fontSize) return;
+      this.fontSize = next;
+      this.$nextTick(() => this.syncLayers());
+    },
+
+    /** 从选区起点推算 1 基的行列号 */
+    updateCursor() {
+      const input = this.$refs.input;
+      if (!input || typeof input.selectionStart !== "number") return;
+      const position = Math.min(input.selectionStart, this.content.length);
+      let line = 1;
+      let column = 1;
+      for (let index = 0; index < position; index++) {
+        if (this.content[index] === "\n") {
+          line++;
+          column = 1;
+        } else {
+          column++;
+        }
+      }
+      this.cursorLine = line;
+      this.cursorColumn = column;
+    },
+
+    /* ---------------- 替换 ---------------- */
+
+    onReplaceInput(event) {
+      this.replaceText = event && event.target ? String(event.target.value) : "";
+    },
+
+    /** 替换当前选中的匹配项 */
+    replaceOne() {
+      if (this.isReadOnly) return;
+      const matches = this.matches;
+      if (!this.search || !matches.length) {
+        this.setStatus("没有可替换的匹配项", true);
+        return;
+      }
+      const index = Math.min(Math.max(this.currentIndex, 0), matches.length - 1);
+      const match = matches[index];
+      const next =
+        this.content.slice(0, match.start) +
+        this.replaceText +
+        this.content.slice(match.end);
+      const caret = match.start + this.replaceText.length;
+      this.applyEdit(next, caret, caret);
+      this.setStatus("已替换 1 处", false);
+    },
+
+    /** 替换全部匹配项（按当前「区分大小写」设置） */
+    replaceAll() {
+      if (this.isReadOnly) return;
+      const matches = this.matches;
+      if (!this.search || !matches.length) {
+        this.setStatus("没有可替换的匹配项", true);
+        return;
+      }
+      let out = "";
+      let last = 0;
+      for (const match of matches) {
+        out += this.content.slice(last, match.start) + this.replaceText;
+        last = match.end;
+      }
+      out += this.content.slice(last);
+      const caret = Math.min(
+        (matches[0] ? matches[0].start : 0) + this.replaceText.length,
+        out.length
+      );
+      this.applyEdit(out, caret, caret);
+      this.setStatus(`已替换 ${matches.length} 处`, false);
     },
 
     /** Esc：优先关闭查找栏，其次（内容已修改时先确认）关闭编辑器 */
@@ -1060,6 +1428,47 @@ export default {  props: {
 
 .editor-format:hover {
   background-color: #eef4fb;
+}
+
+/* 显示选项按钮（自动换行 / 字号），比主操作按钮更轻 */
+.editor-tool {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  color: #444;
+  font-size: 0.85em;
+  white-space: nowrap;
+}
+
+.editor-tool:hover {
+  background-color: #f2f2f2;
+}
+
+.editor-tool.active {
+  background-color: #eef4fb;
+  border-color: #0b5fa5;
+  color: #0b5fa5;
+}
+
+/* 替换输入框与查找框同款，只是窄一点 */
+.editor-searchbar .editor-replaceinput {
+  width: auto;
+  flex: 1 1 140px;
+  min-width: 100px;
+  padding: 6px 12px;
+}
+
+.editor-nav:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 关闭自动换行：长行改为横向滚动（两层样式必须一致，否则会错位） */
+.editor-body.nowrap .editor-layer {
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .editor-save {

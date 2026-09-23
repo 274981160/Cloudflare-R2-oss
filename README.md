@@ -17,7 +17,9 @@
 | --- | --- |
 | 文件管理 | 浏览、上传、下载、重命名、移动、复制、删除（目录递归删除）、新建文件夹 |
 | 上传 | 拖拽上传、**拖入/选择整个文件夹并保留目录结构（含空目录）**、大文件分片上传、上传进度与并发控制 |
-| 在线编辑 | 直接编辑 txt / js / py / json / md / yaml… 等文本文件；识别 20+ 种语言做语法着色，JSON 有实时校验与一键格式化；任何文件都能「以文本方式打开」兜底 |
+| 在线编辑 | 直接编辑 txt / js / py / json / md / yaml… 等文本文件；识别 20+ 种语言做语法着色，JSON 有实时校验与一键整理缩进；任何文件都能「以文本方式打开」兜底 |
+| JSON 整理缩进 | 一键把 JSON 排成规范缩进；**只动空白**——注释（JSONC / tsconfig.json）、数字写法（`1.0` / `1e2` / 大整数）、重复键、字符串原文全部原样保留；沿用文件已有缩进风格，兼容 BOM 与 CRLF |
+| 编辑体验 | 查找与**替换**（单个 / 全部，可区分大小写）、Tab 缩进与 Shift+Tab 反缩进（支持多行整块）、回车自动缩进、自动换行开关、字号调节、光标行列与字符统计 |
 | 编辑内搜索 | 编辑时按关键词高亮全部匹配、上一个/下一个跳转、显示 `n/m` 计数、可切换区分大小写 |
 | 预览 | 图片、视频缩略图，PDF 缩略图，无缩略图时按 MIME 类型显示图标 |
 | 批量操作 | 多选文件与目录，批量移动、复制、删除、下载 |
@@ -409,7 +411,7 @@ WEBDAV_PUBLIC_READ=1
 
 ### 安全模型测试
 
-上面那套跑的是**公开读模式**；另有一套针对**默认私有模式**的安全测试（分享链接、越权防护、编辑历史）：
+上面那套跑的是**公开读模式**；另有一套针对**默认私有模式**的安全测试（分享链接、越权防护、下载签名、PROPFIND 兼容性）：
 
 ```bash
 # 另起一个私有实例（给独立存储目录，避免与上面实例抢同一个 SQLite）
@@ -417,6 +419,18 @@ npx wrangler pages dev . --r2 BUCKET --persist-to .wrangler/state-private --port
   --binding WEBDAV_PUBLIC_READ=0 --binding WEBDAV_PUBLIC_THUMBNAILS=0
 bash scripts/security-test.sh http://127.0.0.1:8789
 ```
+
+### 前端纯函数测试
+
+编辑器的「整理缩进」会直接改写用户的文件，所以「**只动空白、绝不动内容**」这条底线有独立的回归测试。
+它不依赖浏览器和任何 npm 包，直接跑：
+
+```bash
+node scripts/frontend-test.mjs
+```
+
+覆盖：整理缩进的重排与幂等、注释（JSONC）与尾逗号保留、BOM 与 CRLF 保留、
+数字写法 / 重复键 / 字符串原文不被改写、缩进风格探测、严格程度判定等 38 项断言。
 
 ---
 
@@ -433,7 +447,8 @@ Cloudflare-R2-oss/
 │   ├── App.vue         # 应用主组件：列表、导航、上传、多选、右键菜单、各弹窗接线
 │   ├── LoginDialog.vue # 登录弹窗（HTTP Basic，凭据存 localStorage）
 │   ├── FolderPicker.vue# 可导航的目录选择器：移动目标、API Key 授权目录（支持多选）
-│   ├── TextEditor.vue  # 在线文本编辑器：语法着色、编辑内搜索、JSON 校验、撤销重做
+│   ├── TextEditor.vue  # 在线文本编辑器：语法着色、查找替换、JSON 校验与整理缩进、
+│   │                   # Tab/回车自动缩进、换行开关、字号、撤销重做
 │   ├── ApiKeys.vue     # API Key 管理：生成、列举、吊销、复制 curl 示例
 │   ├── Shares.vue      # 分享管理：列举、复制链接、打开、吊销
 │   ├── PreviewOverlay.vue # 应用内预览：图片/视频/音频/PDF（带认证取回，不新开窗口）
@@ -442,7 +457,7 @@ Cloudflare-R2-oss/
 │   ├── Dialog.vue      # 通用弹窗容器
 │   ├── MimeIcon.vue    # 按 MIME 类型渲染文件图标
 │   ├── main.mjs        # 前端逻辑模块：认证、请求封装、路径工具、缩略图、分片上传、
-│   │                   # 文本类型判定、语言识别与词法着色
+│   │                   # 文本类型判定、语言识别与词法着色、JSON 整理缩进
 │   ├── main.css        # 样式
 │   ├── manifest.json   # PWA manifest
 │   ├── favicon.png     # 站点图标
@@ -488,7 +503,8 @@ Cloudflare-R2-oss/
 │
 ├── scripts/
 │   ├── smoke-test.sh    # WebDAV / API 冒烟测试（公开读模式），184 项断言
-│   └── security-test.sh # 安全模型测试（默认私有模式），90 项断言
+│   ├── security-test.sh # 安全模型测试（默认私有模式），90 项断言
+│   └── frontend-test.mjs # 前端纯函数测试（JSON 整理缩进等内容安全底线），38 项断言
 │
 ├── package.json        # 没有任何运行时依赖；开发依赖只有 wrangler
 ├── tsconfig.json       # TypeScript 配置，仅供编辑器类型提示，不参与构建

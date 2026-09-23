@@ -1557,6 +1557,302 @@ export function tokenize(code, language) {
 }
 
 /**
+ * 局部文本整理：JSON / JSONC 的「整理缩进」。
+ *
+ * 设计取舍（为什么不直接 JSON.parse + JSON.stringify）：
+ * - `JSON.parse` + `stringify` 会**改写内容**：`1.0` 变 `1`、大整数丢精度、
+ *   `-0` 变 `0`、重复键被合并、`^\uFEFF` / 注释直接解析失败（tsconfig.json 就是 JSONC）。
+ * - 这里只重排**空白**：先把文本切成 token（字符串、注释、结构符、其他），
+ *   再按结构重新缩进输出，非空白字符逐个原样带过去。
+ * - 输出前做一次校验：去掉所有空白后必须与原文完全一致，且字符串字面量逐字相同；
+ *   校验不过就放弃整理、保持原文，绝不冒险改写用户文件。
+ */
+
+/** 去掉 UTF-8 BOM，返回 [是否含 BOM, 去掉后的文本] */
+export function splitBom(text) {
+  const value = String(text == null ? "" : text);
+  return value.charCodeAt(0) === 0xfeff ? [true, value.slice(1)] : [false, value];
+}
+
+/**
+ * 探测文本已有的缩进风格，返回缩进字符串（如 `"  "` / `"    "` / `"\t"`）。
+ * 探测不出时返回两空格。
+ */
+export function detectJsonIndent(text) {
+  const lines = String(text == null ? "" : text).split(/\r\n|\n|\r/);
+  const tabLines = lines.filter((line) => /^\t+\S/.test(line)).length;
+  const spaceLines = lines.filter((line) => /^ +\S/.test(line)).length;
+  if (tabLines > 0 && tabLines >= spaceLines) return "\t";
+
+  let unit = 0;
+  for (const line of lines) {
+    const match = /^( +)\S/.exec(line);
+    if (!match) continue;
+    const width = match[1].length;
+    if (width > 0 && (unit === 0 || width < unit)) unit = width;
+  }
+  if (unit >= 1 && unit <= 8) return " ".repeat(unit);
+  return "  ";
+}
+
+/** JSON 结构化 token：字符串 / 行注释 / 块注释 / 结构符 / 其他（数字、字面量…） */
+function tokenizeJsonLike(text) {
+  const tokens = [];
+  let index = 0;
+  let newlineBefore = false;
+
+  const push = (type, start, end) => {
+    tokens.push({ type, text: text.slice(start, end), newlineBefore });
+    newlineBefore = false;
+  };
+
+  while (index < text.length) {
+    const char = text[index];
+
+    if (char === " " || char === "\t" || char === "\r" || char === "\n") {
+      if (char === "\n") newlineBefore = true;
+      index += 1;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      let cursor = index + 1;
+      while (cursor < text.length) {
+        if (text[cursor] === "\\") {
+          cursor += 2;
+          continue;
+        }
+        if (text[cursor] === char) {
+          cursor += 1;
+          break;
+        }
+        if (text[cursor] === "\n") break; // 未闭合的字符串：到行尾为止
+        cursor += 1;
+      }
+      push("string", index, Math.min(cursor, text.length));
+      index = Math.min(cursor, text.length);
+      continue;
+    }
+
+    if (char === "/" && text[index + 1] === "/") {
+      let cursor = index;
+      while (cursor < text.length && text[cursor] !== "\n") cursor += 1;
+      push("linecomment", index, cursor);
+      index = cursor;
+      continue;
+    }
+
+    if (char === "/" && text[index + 1] === "*") {
+      let cursor = index + 2;
+      while (
+        cursor < text.length &&
+        !(text[cursor] === "*" && text[cursor + 1] === "/")
+      ) {
+        cursor += 1;
+      }
+      cursor = Math.min(cursor + 2, text.length);
+      push("blockcomment", index, cursor);
+      index = cursor;
+      continue;
+    }
+
+    if ("{}[],:".indexOf(char) !== -1) {
+      push("punct", index, index + 1);
+      index += 1;
+      continue;
+    }
+
+    let cursor = index;
+    while (
+      cursor < text.length &&
+      "{}[],:\"'/ \t\r\n".indexOf(text[cursor]) === -1
+    ) {
+      cursor += 1;
+    }
+    if (cursor === index) cursor += 1; // 兜底，避免死循环
+    push("other", index, cursor);
+    index = cursor;
+  }
+
+  return tokens;
+}
+
+/** 去掉所有空白字符（用于校验整理前后非空白内容一致） */
+function stripAllWhitespace(text) {
+  return String(text == null ? "" : text).replace(/\s+/g, "");
+}
+
+/**
+ * 去掉 JSONC 风格的注释与尾逗号（基于同一套 token，字符串内的注释符号不会被误删）。
+ * 结果只用于「能不能解析」的判断，不用于写回文件。
+ */
+export function stripJsonComments(text) {
+  const tokens = tokenizeJsonLike(String(text == null ? "" : text));
+  let out = "";
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type === "linecomment" || token.type === "blockcomment") continue;
+    if (token.type === "punct" && token.text === ",") {
+      const next = tokens[i + 1];
+      if (next && next.type === "punct" && (next.text === "}" || next.text === "]")) {
+        continue; // 尾逗号
+      }
+    }
+    out += token.text + " ";
+  }
+  return out;
+}
+
+/**
+ * 判断 JSON 文本的严格程度：
+ * - `"valid"`：严格 JSON
+ * - `"jsonc"`：带注释/尾逗号的宽松 JSON（tsconfig.json 这类）
+ * - `"invalid"`：确实有语法错误
+ * - `"empty"`：空内容
+ */
+export function classifyJsonText(source) {
+  const [, raw] = splitBom(String(source == null ? "" : source));
+  if (!raw.trim()) return "empty";
+  try {
+    JSON.parse(raw);
+    return "valid";
+  } catch (error) {
+    /* 继续按 JSONC 试 */
+  }
+  try {
+    JSON.parse(stripJsonComments(raw));
+    return "jsonc";
+  } catch (error) {
+    return "invalid";
+  }
+}
+
+/**
+ * 把 JSON / JSONC 文本按结构重新排版（只改空白）。
+ *
+ * @param {string} source 原文
+ * @param {{indent?: string}} [options] indent 指定缩进；默认沿用原文风格
+ * @returns {{text: string, changed: boolean, unsafe?: boolean}}
+ *   changed=false 表示无需改动（或校验未通过），text 一定是**可安全使用**的结果。
+ */
+export function prettyJsonText(source, options) {
+  const raw0 = String(source == null ? "" : source);
+  const [hasBom, raw] = splitBom(raw0);
+
+  const tokens = tokenizeJsonLike(raw);
+  const structural = tokens.some(
+    (token) =>
+      token.type === "punct" && (token.text === "{" || token.text === "[")
+  );
+  if (!structural) return { text: raw0, changed: false };
+
+  const indent =
+    (options && typeof options.indent === "string" && options.indent) ||
+    detectJsonIndent(raw);
+  const eol = raw.indexOf("\r\n") !== -1 ? "\r\n" : "\n";
+
+  let out = "";
+  let depth = 0;
+
+  const indentOf = (level) => indent.repeat(Math.max(0, level));
+  // 先清掉行尾空白与悬挂换行，保证不会出现空行（可重复调用）
+  const newlineIndent = (level) => {
+    out = out.replace(/[ \t]+$/, "").replace(/(\r\n|\n|\r)$/, "");
+    out += eol + indentOf(level);
+  };
+  const needsSpace = () => {
+    if (!out) return false;
+    const last = out[out.length - 1];
+    return (
+      last !== " " &&
+      last !== "\t" &&
+      last !== "\n" &&
+      last !== "\r" &&
+      last !== "{" &&
+      last !== "[" &&
+      last !== "," &&
+      last !== ":"
+    );
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+
+    if (token.type === "punct" && (token.text === "{" || token.text === "[")) {
+      const close = token.text === "{" ? "}" : "]";
+      const next = tokens[i + 1];
+      out += token.text;
+      if (next && next.type === "punct" && next.text === close) {
+        out += close; // 空对象 / 空数组保持一行
+        i += 1;
+        continue;
+      }
+      depth += 1;
+      newlineIndent(depth);
+      continue;
+    }
+
+    if (token.type === "punct" && (token.text === "}" || token.text === "]")) {
+      depth = Math.max(0, depth - 1);
+      newlineIndent(depth);
+      out += token.text;
+      continue;
+    }
+
+    if (token.type === "punct" && token.text === ",") {
+      out += ",";
+      newlineIndent(depth);
+      continue;
+    }
+
+    if (token.type === "punct" && token.text === ":") {
+      out += ": ";
+      continue;
+    }
+
+    if (token.type === "linecomment") {
+      if (token.newlineBefore) newlineIndent(depth);
+      else if (needsSpace()) out += " ";
+      out += token.text;
+      newlineIndent(depth);
+      continue;
+    }
+
+    if (token.type === "blockcomment") {
+      if (token.newlineBefore) newlineIndent(depth);
+      else if (needsSpace()) out += " ";
+      out += token.text;
+      continue;
+    }
+
+    if (needsSpace()) out += " ";
+    out += token.text;
+  }
+
+  out = out.replace(/[ \t]+$/, "").replace(/(\r\n|\n|\r)$/, "");
+  const keepTrailingNewline = /(\r\n|\n|\r)$/.test(raw);
+
+  // 安全校验：非空白字符必须逐一一致；字符串字面量也必须逐一一致
+  if (stripAllWhitespace(out) !== stripAllWhitespace(raw)) {
+    return { text: raw0, changed: false, unsafe: true };
+  }
+  const before = tokens
+    .filter((token) => token.type === "string")
+    .map((token) => token.text);
+  const after = tokenizeJsonLike(out)
+    .filter((token) => token.type === "string")
+    .map((token) => token.text);
+  if (before.length !== after.length || before.some((value, i2) => value !== after[i2])) {
+    return { text: raw0, changed: false, unsafe: true };
+  }
+
+  let result = out + (keepTrailingNewline ? eol : "");
+  if (hasBom) result = "\uFEFF" + result;
+  if (result === raw0) return { text: raw0, changed: false };
+  return { text: result, changed: true };
+}
+
+/**
  * 重名时生成「xxx - 副本.ext」
  * @param {string} name
  * @param {string[]} existing 已占用的名字

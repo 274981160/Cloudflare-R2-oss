@@ -441,7 +441,7 @@ export default {
   flex-direction: column;
   width: min(1100px, 100%);
   height: min(90vh, 100%);
-  background-color: var(--fd-surface);
+  background-color: white;
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 2px 8px 24px rgba(0, 0, 0, 0.35);
@@ -454,8 +454,8 @@ export default {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--fd-border);
-  background-color: var(--fd-surface-2);
+  border-bottom: 1px solid #eee;
+  background-color: #fafafa;
 }
 
 .preview-title {
@@ -467,7 +467,7 @@ export default {
 }
 
 .preview-meta {
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.8em;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -482,13 +482,13 @@ export default {
   flex-shrink: 0;
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid var(--fd-border);
-  color: var(--fd-primary);
+  border: 1px solid #ddd;
+  color: #0b5fa5;
   font-size: 0.85em;
 }
 
 .preview-button:hover {
-  background-color: var(--fd-primary-soft);
+  background-color: #eef4fb;
 }
 
 .preview-button:disabled {
@@ -498,23 +498,23 @@ export default {
 .preview-close {
   flex-shrink: 0;
   padding: 6px 10px;
-  color: var(--fd-primary);
+  color: #0b5fa5;
   font-size: 0.9em;
 }
 
 .preview-status {
   flex-shrink: 0;
   padding: 6px 12px;
-  background-color: var(--fd-success-soft);
-  color: var(--fd-success);
+  background-color: #eef7f0;
+  color: #1b7f3b;
   font-size: 0.8em;
-  border-bottom: 1px solid var(--fd-border);
+  border-bottom: 1px solid #eee;
   word-break: break-word;
 }
 
 .preview-status.error {
-  background-color: var(--fd-danger-soft);
-  color: var(--fd-danger);
+  background-color: #fdecef;
+  color: #b00020;
 }
 
 .preview-stage {
@@ -551,7 +551,7 @@ export default {
   width: 100%;
   height: 100%;
   border: 0;
-  background-color: var(--fd-surface);
+  background-color: white;
 }
 
 .preview-state {
@@ -579,7 +579,7 @@ export default {
   margin-top: 12px;
   padding: 8px 18px;
   border-radius: 6px;
-  background-color: var(--fd-accent);
+  background-color: rgb(243, 128, 32);
   color: white;
   font-size: 0.9em;
 }
@@ -588,10 +588,10 @@ export default {
   flex-shrink: 0;
   margin: 0;
   padding: 6px 12px;
-  border-top: 1px solid var(--fd-border);
-  color: var(--fd-text-muted);
+  border-top: 1px solid #eee;
+  color: dimgray;
   font-size: 0.78em;
-  background-color: var(--fd-surface-2);
+  background-color: #fafafa;
 }
 
 @media only screen and (max-width: 768px) {

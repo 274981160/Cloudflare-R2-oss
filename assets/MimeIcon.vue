@@ -1,7 +1,5 @@
 <script setup>
-import { computed } from "vue";
-
-const props = defineProps({
+defineProps({
   contentType: {
     type: String,
     default: "",
@@ -15,25 +13,10 @@ const props = defineProps({
     default: 36,
   },
 });
-
-/** 按类型给图标上色（浅色/深色都用中间调，保证两边都清晰） */
-const tone = computed(() => {
-  const type = String(props.contentType || "").toLowerCase();
-  if (type === "application/pdf") return "tone-pdf";
-  if (type.startsWith("video/")) return "tone-video";
-  if (type.startsWith("audio/")) return "tone-audio";
-  if (
-    ["application/zip", "application/gzip", "application/vnd.rar", "application/x-7z-compressed"].includes(type)
-  ) {
-    return "tone-archive";
-  }
-  if (type.startsWith("image/")) return "tone-image";
-  return "tone-file";
-});
 </script>
 
 <template>
-  <div class="file-icon" :class="tone">
+  <div class="file-icon">
     <img
       v-if="thumbnail"
       :src="thumbnail"
@@ -48,8 +31,6 @@ const tone = computed(() => {
       viewBox="0 0 384 512"
       :width="size"
       :height="size"
-      fill="currentColor"
-      aria-hidden="true"
     >
       <!--! Font Awesome Pro 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license (Commercial License) Copyright 2022 Fonticons, Inc. -->
       <path

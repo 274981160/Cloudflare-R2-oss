@@ -1342,12 +1342,10 @@ export default {  props: {
   flex-direction: column;
   width: min(1000px, 100%);
   height: min(88vh, 100%);
-  background-color: var(--fd-surface);
-  color: var(--fd-text);
-  border: 1px solid var(--fd-border);
-  border-radius: var(--fd-radius-lg);
+  background-color: white;
+  border-radius: 8px;
   overflow: hidden;
-  box-shadow: var(--fd-shadow-2);
+  box-shadow: 2px 8px 24px rgba(0, 0, 0, 0.3);
 }
 
 .editor-toolbar {
@@ -1357,7 +1355,7 @@ export default {  props: {
   align-items: center;
   gap: 8px;
   padding: 10px 12px;
-  border-bottom: 1px solid var(--fd-border);
+  border-bottom: 1px solid #eee;
 }
 
 .editor-title {
@@ -1376,19 +1374,19 @@ export default {  props: {
   flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 10px;
-  background-color: var(--fd-surface-3);
-  color: var(--fd-text-muted);
+  background-color: #eee;
+  color: dimgray;
   font-size: 0.75em;
   white-space: nowrap;
 }
 
 .editor-badge.dirty {
-  background-color: var(--fd-accent-soft);
-  color: var(--fd-accent-strong);
+  background-color: #fff3d6;
+  color: #8a6d3b;
 }
 
 .editor-stat {
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.8em;
   white-space: nowrap;
 }
@@ -1398,8 +1396,8 @@ export default {  props: {
   flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 10px;
-  background-color: var(--fd-primary-soft);
-  color: var(--fd-primary);
+  background-color: #eef4fb;
+  color: #0b5fa5;
   font-size: 0.75em;
   white-space: nowrap;
 }
@@ -1408,7 +1406,7 @@ export default {  props: {
 .editor-json {
   flex-shrink: 0;
   font-size: 0.78em;
-  color: var(--fd-success);
+  color: #1b7f3b;
   white-space: nowrap;
   max-width: 46%;
   overflow: hidden;
@@ -1416,20 +1414,20 @@ export default {  props: {
 }
 
 .editor-json.error {
-  color: var(--fd-danger);
+  color: #b00020;
 }
 
 .editor-format {
   flex-shrink: 0;
   padding: 6px 12px;
   border-radius: 6px;
-  border: 1px solid var(--fd-border);
-  color: var(--fd-primary);
+  border: 1px solid #ddd;
+  color: #0b5fa5;
   font-size: 0.85em;
 }
 
 .editor-format:hover {
-  background-color: var(--fd-primary-soft);
+  background-color: #eef4fb;
 }
 
 /* 显示选项按钮（自动换行 / 字号），比主操作按钮更轻 */
@@ -1437,20 +1435,20 @@ export default {  props: {
   flex-shrink: 0;
   padding: 6px 10px;
   border-radius: 6px;
-  border: 1px solid var(--fd-border);
-  color: var(--fd-text-soft);
+  border: 1px solid #ddd;
+  color: #444;
   font-size: 0.85em;
   white-space: nowrap;
 }
 
 .editor-tool:hover {
-  background-color: var(--fd-surface-2);
+  background-color: #f2f2f2;
 }
 
 .editor-tool.active {
-  background-color: var(--fd-primary-soft);
-  border-color: var(--fd-primary);
-  color: var(--fd-primary);
+  background-color: #eef4fb;
+  border-color: #0b5fa5;
+  color: #0b5fa5;
 }
 
 /* 替换输入框与查找框同款，只是窄一点 */
@@ -1477,7 +1475,7 @@ export default {  props: {
   flex-shrink: 0;
   padding: 6px 16px;
   border-radius: 6px;
-  background-color: var(--fd-accent);
+  background-color: rgb(243, 128, 32);
   color: white;
   font-size: 0.9em;
 }
@@ -1493,14 +1491,14 @@ export default {  props: {
 .editor-close {
   flex-shrink: 0;
   padding: 6px 8px;
-  color: var(--fd-primary);
+  color: #0b5fa5;
   font-size: 0.9em;
 }
 
 .editor-primary {
   padding: 8px 18px;
   border-radius: 6px;
-  background-color: var(--fd-accent);
+  background-color: rgb(243, 128, 32);
   color: white;
   font-size: 0.9em;
 }
@@ -1508,16 +1506,16 @@ export default {  props: {
 .editor-status {
   flex-shrink: 0;
   padding: 6px 12px;
-  background-color: var(--fd-success-soft);
-  color: var(--fd-success);
+  background-color: #eef7f0;
+  color: #1b7f3b;
   font-size: 0.8em;
-  border-bottom: 1px solid var(--fd-border);
+  border-bottom: 1px solid #eee;
   word-break: break-word;
 }
 
 .editor-status.error {
-  background-color: var(--fd-danger-soft);
-  color: var(--fd-danger);
+  background-color: #fdecef;
+  color: #b00020;
 }
 
 /* 强行按文本打开且发现 NUL 字节时的警告条 */
@@ -1525,7 +1523,7 @@ export default {  props: {
   flex-shrink: 0;
   margin: 0;
   padding: 8px 12px;
-  background-color: var(--fd-danger);
+  background-color: #b00020;
   color: white;
   font-size: 0.85em;
   font-weight: 600;
@@ -1539,8 +1537,8 @@ export default {  props: {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--fd-border);
-  background-color: var(--fd-surface-2);
+  border-bottom: 1px solid #eee;
+  background-color: #fafafa;
 }
 
 .editor-searchbar .editor-searchinput {
@@ -1551,7 +1549,7 @@ export default {  props: {
 }
 
 .editor-matchcount {
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.8em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -1561,12 +1559,12 @@ export default {  props: {
   flex-shrink: 0;
   padding: 4px 8px;
   border-radius: 6px;
-  color: var(--fd-primary);
+  color: #0b5fa5;
   font-size: 0.85em;
 }
 
 .editor-nav:hover {
-  background-color: var(--fd-primary-soft);
+  background-color: #eef4fb;
 }
 
 .editor-case {
@@ -1574,7 +1572,7 @@ export default {  props: {
   display: flex;
   align-items: center;
   gap: 4px;
-  color: var(--fd-text-soft);
+  color: #444;
   font-size: 0.8em;
   white-space: nowrap;
   cursor: pointer;
@@ -1588,12 +1586,12 @@ export default {  props: {
   justify-content: center;
   gap: 10px;
   padding: 24px 16px;
-  color: var(--fd-text-muted);
+  color: dimgray;
   text-align: center;
 }
 
 .editor-state.error {
-  color: var(--fd-danger);
+  color: #b00020;
 }
 
 .editor-state-text {
@@ -1631,7 +1629,7 @@ export default {  props: {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  background-color: var(--fd-code-bg);
+  background-color: white;
 }
 
 .editor-layer {
@@ -1663,7 +1661,7 @@ export default {  props: {
 .editor-highlight {
   z-index: 0;
   overflow: hidden;
-  color: var(--fd-code-text);
+  color: #1a1a1a;
   pointer-events: none;
 }
 
@@ -1672,50 +1670,50 @@ export default {  props: {
   margin: 0;
   padding: 0;
   border-radius: 2px;
-  background-color: var(--fd-mark-bg);
+  background-color: #ffe08a;
   color: inherit;
 }
 
 .editor-highlight mark.current {
-  background-color: var(--fd-mark-current-bg);
-  color: var(--fd-mark-text);
+  background-color: #ff9f1a;
+  color: #1a1a1a;
 }
 
 /* 语法着色：只改颜色，绝不改字体/字重/字距，否则两层会错位 */
 .editor-highlight .tok-comment {
-  color: var(--fd-tok-comment);
+  color: #6a737d;
 }
 
 .editor-highlight .tok-string {
-  color: var(--fd-tok-string);
+  color: #0a7d33;
 }
 
 .editor-highlight .tok-number {
-  color: var(--fd-tok-number);
+  color: #b45309;
 }
 
 .editor-highlight .tok-keyword {
-  color: var(--fd-tok-keyword);
+  color: #0b5fa5;
 }
 
 .editor-highlight .tok-literal {
-  color: var(--fd-tok-literal);
+  color: #8250df;
 }
 
 .editor-highlight .tok-property {
-  color: var(--fd-tok-property);
+  color: #a31515;
 }
 
 .editor-highlight .tok-tag {
-  color: var(--fd-tok-keyword);
+  color: #0b5fa5;
 }
 
 .editor-highlight .tok-attr {
-  color: var(--fd-tok-number);
+  color: #b45309;
 }
 
 .editor-highlight .tok-punctuation {
-  color: var(--fd-tok-punct);
+  color: #6b6b6b;
 }
 
 .editor-input {
@@ -1727,7 +1725,7 @@ export default {  props: {
   resize: none;
   background-color: transparent;
   color: transparent;
-  caret-color: var(--fd-code-text);
+  caret-color: #1a1a1a;
   outline: none;
 }
 

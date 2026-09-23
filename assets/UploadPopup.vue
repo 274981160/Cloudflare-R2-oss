@@ -122,7 +122,7 @@ const canPickDirectory = supportsDirectoryUpload();
   width: 100%;
   z-index: 2;
   border-radius: 16px 16px 0 0;
-  background-color: var(--fd-surface);
+  background-color: white;
 }
 
 .popup .button-grid {
@@ -153,7 +153,7 @@ const canPickDirectory = supportsDirectoryUpload();
   padding: 10px 12px;
   border-radius: 8px;
   background-color: #fff8e6;
-  color: var(--fd-accent-strong);
+  color: #8a6d3b;
   font-size: 12px;
   line-height: 1.6;
   text-align: left;

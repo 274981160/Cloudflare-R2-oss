@@ -203,37 +203,6 @@ export function setLastUsername(username) {
   if (username) storageSet(globalThis.localStorage, AUTH_USER_STORAGE_KEY, String(username));
 }
 
-/* ------------------------------------------------------------------ *
- * 界面偏好（视图、单击行为、主题、排序）：只存本机，不上传服务端
- * ------------------------------------------------------------------ */
-
-const PREF_PREFIX = "fd_pref_";
-
-/**
- * 读取本机偏好。
- * @param {string} key 偏好名（会自动加前缀）
- * @param {*} fallback 读不到或解析失败时返回它
- */
-export function loadPreference(key, fallback) {
-  const raw = storageGet(globalThis.localStorage, `${PREF_PREFIX}${key}`);
-  if (raw === "" || raw == null) return fallback;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed == null ? fallback : parsed;
-  } catch (error) {
-    return fallback;
-  }
-}
-
-/** 保存本机偏好；存储不可用（隐私模式等）时静默忽略。 */
-export function savePreference(key, value) {
-  try {
-    storageSet(globalThis.localStorage, `${PREF_PREFIX}${key}`, JSON.stringify(value));
-  } catch (error) {
-    /* 忽略 */
-  }
-}
-
 function hasHeader(headers, name) {
   const target = String(name).toLowerCase();
   return Object.keys(headers || {}).some((key) => key.toLowerCase() === target);
@@ -878,30 +847,11 @@ export function formatSize(size) {
 }
 
 /** 本地时间字符串 */
-/**
- * 列表里显示的日期：越近越简短，避免在窄屏上被截断。
- * 今天 18:02 / 昨天 18:02 / 09-23 18:02 / 2025-09-23
- */
 export function formatDate(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-
-  const now = new Date();
-  const pad = (number) => String(number).padStart(2, "0");
-  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  const sameDay = (left, right) =>
-    left.getFullYear() === right.getFullYear() &&
-    left.getMonth() === right.getMonth() &&
-    left.getDate() === right.getDate();
-
-  if (sameDay(date, now)) return `今天 ${clock}`;
-  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-  if (sameDay(date, yesterday)) return `昨天 ${clock}`;
-  if (date.getFullYear() === now.getFullYear()) {
-    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`;
-  }
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return date.toLocaleString();
 }
 
 /** 预览类型：image / video / audio / pdf / null */

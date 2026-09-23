@@ -39,7 +39,7 @@
             </div>
 
             <div v-if="cwd" class="fp-item" @click="goUp">
-              <FolderIcon :size="24" />
+              <img :src="folderIcon" width="24" height="24" alt="" />
               <span>..</span>
             </div>
 
@@ -58,7 +58,7 @@
                 :checked="isSelected(folder.key)"
                 @click.stop="toggle(folder.key)"
               />
-              <FolderIcon :size="24" />
+              <img :src="folderIcon" width="24" height="24" alt="" />
               <span class="fp-name" v-text="folder.name"></span>
               <button
                 v-if="multiple"
@@ -122,15 +122,15 @@
 </template>
 
 <script>
-import FolderIcon from "./FolderIcon.vue";
 import Dialog from "./Dialog.vue";
 import MimeIcon from "./MimeIcon.vue";
 import { basename, errorMessage, listDirectory, normalizePath } from "/assets/main.mjs";
 
-
+const FOLDER_ICON =
+  "https://cdnjs.cloudflare.com/ajax/libs/material-design-icons/4.0.0/png/file/folder/materialicons/36dp/2x/baseline_folder_black_36dp.png";
 
 export default {
-  components: { Dialog, MimeIcon, FolderIcon },
+  components: { Dialog, MimeIcon },
 
   props: {
     modelValue: Boolean,
@@ -176,6 +176,7 @@ export default {
   }),
 
   computed: {
+    folderIcon: () => FOLDER_ICON,
 
     breadcrumbs() {
       const crumbs = [{ name: "全部文件", path: "" }];
@@ -336,7 +337,7 @@ export default {
 }
 
 .fp-crumb {
-  color: var(--fd-primary);
+  color: #0b5fa5;
   padding: 2px 4px;
   border-radius: 4px;
   max-width: 140px;
@@ -346,7 +347,7 @@ export default {
 }
 
 .fp-crumb.current {
-  color: var(--fd-text);
+  color: #222;
   font-weight: 600;
 }
 
@@ -358,7 +359,7 @@ export default {
 .fp-list {
   height: 240px;
   overflow-y: auto;
-  border: 1px solid var(--fd-border);
+  border: 1px solid #eee;
   border-radius: 6px;
   padding: 4px;
 }
@@ -373,7 +374,7 @@ export default {
 }
 
 .fp-item:hover {
-  background-color: var(--fd-surface-2);
+  background-color: whitesmoke;
 }
 
 .fp-item.selected {
@@ -403,12 +404,12 @@ export default {
   margin-left: auto;
   padding: 2px 8px;
   border-radius: 6px;
-  color: var(--fd-primary);
+  color: #0b5fa5;
   font-size: 0.8em;
 }
 
 .fp-enter:hover {
-  background-color: var(--fd-primary-soft);
+  background-color: #eef4fb;
 }
 
 .fp-name {
@@ -422,25 +423,25 @@ export default {
 .fp-state {
   padding: 12px;
   text-align: center;
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.85em;
 }
 
 .fp-state.error {
-  color: var(--fd-danger);
+  color: #b00020;
 }
 
 .fp-current {
   margin: 8px 0 0;
   font-size: 0.8em;
-  color: var(--fd-text-soft);
+  color: #444;
   word-break: break-all;
 }
 
 .fp-warning {
   margin: 6px 0 0;
   font-size: 0.8em;
-  color: var(--fd-danger);
+  color: #b00020;
 }
 
 .fp-actions {
@@ -451,13 +452,13 @@ export default {
 }
 
 .fp-text-button {
-  color: var(--fd-primary);
+  color: #0b5fa5;
   padding: 8px;
   font-size: inherit;
 }
 
 .fp-primary-button {
-  background-color: var(--fd-accent);
+  background-color: rgb(243, 128, 32);
   color: white;
   border-radius: 6px;
   padding: 8px 16px;

@@ -282,7 +282,7 @@ export default {
 
 .shares-intro {
   margin: 0 0 12px;
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.8em;
   line-height: 1.5;
 }
@@ -291,21 +291,21 @@ export default {
   margin: 0 0 8px;
   padding: 6px 10px;
   border-radius: 6px;
-  background-color: var(--fd-success-soft);
-  color: var(--fd-success);
+  background-color: #eef7f0;
+  color: #1b7f3b;
   font-size: 0.8em;
   word-break: break-word;
 }
 
 .shares-message.error {
-  background-color: var(--fd-danger-soft);
-  color: var(--fd-danger);
+  background-color: #fdecef;
+  color: #b00020;
 }
 
 .shares-state {
   padding: 24px 8px;
   text-align: center;
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.9em;
 }
 
@@ -313,7 +313,7 @@ export default {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  border: 1px solid var(--fd-border);
+  border: 1px solid #eee;
   border-radius: 6px;
 }
 
@@ -335,7 +335,7 @@ export default {
 .shares-table th {
   position: sticky;
   top: 0;
-  background-color: var(--fd-surface-2);
+  background-color: #fafafa;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -347,7 +347,7 @@ export default {
 .shares-by {
   display: block;
   margin-top: 4px;
-  color: var(--fd-text-muted);
+  color: dimgray;
   font-size: 0.9em;
 }
 
@@ -359,13 +359,13 @@ export default {
   padding: 4px 10px;
   margin: 2px 4px 2px 0;
   border-radius: 6px;
-  border: 1px solid var(--fd-border);
-  color: var(--fd-primary);
+  border: 1px solid #ddd;
+  color: #0b5fa5;
   font-size: 0.95em;
 }
 
 .shares-button:hover {
-  background-color: var(--fd-primary-soft);
+  background-color: #eef4fb;
 }
 
 .shares-button:disabled {
@@ -373,7 +373,7 @@ export default {
 }
 
 .shares-button.danger {
-  color: var(--fd-danger);
+  color: #b00020;
   border-color: #f0c9d0;
 }
 
@@ -387,7 +387,7 @@ export default {
 
 .shares-close {
   padding: 6px 12px;
-  color: var(--fd-primary);
+  color: #0b5fa5;
 }
 
 @media only screen and (max-width: 768px) {

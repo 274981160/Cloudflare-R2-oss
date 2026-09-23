@@ -1,173 +1,3 @@
-/**
- * 站点基础样式与设计变量。
- *
- * 组织方式（参考 filebrowser 等成熟网盘前端）：
- * - 颜色/圆角/阴影/尺寸全部走 CSS 变量，深浅色只换变量不换规则；
- * - 列表有两种视图：view-list（一行一项）与 view-grid（卡片网格），
- *   两者共用同一份 DOM，只靠样式切换，不额外增加模板分支；
- * - 主题：html[data-theme] = auto | light | dark，auto 跟随系统。
- */
-
-:root {
-  color-scheme: light;
-
-  /* 品牌色：沿用 FlareDrive 的橙色，选中态用蓝色系 */
-  --fd-accent: #f38020;
-  --fd-accent-strong: #e0721a;
-  --fd-accent-soft: #fff3e8;
-  --fd-primary: #0b5fa5;
-  --fd-primary-soft: #eef4fb;
-  --fd-danger: #b00020;
-  --fd-danger-soft: #fdecef;
-
-  --fd-bg: #f5f6f8;
-  --fd-surface: #ffffff;
-  --fd-surface-2: #f1f3f6;
-  --fd-surface-3: #e9ecf1;
-  --fd-border: #e5e7eb;
-  --fd-border-strong: #d3d7de;
-
-  --fd-text: #1f2328;
-  --fd-text-soft: #4b5563;
-  --fd-text-muted: #6b7280;
-
-  --fd-selected-bg: #e7f0fb;
-  --fd-selected-border: #0b5fa5;
-
-  --fd-success: #1b7f3b;
-  --fd-success-soft: #eef7f0;
-
-  /* 图标配色：中间调，浅色/深色背景下都清晰 */
-  --fd-icon-folder: #f0a13a;
-  --fd-icon-file: #8a94a6;
-  --fd-icon-image: #4fb477;
-  --fd-icon-video: #7c9cff;
-  --fd-icon-audio: #22b8cf;
-  --fd-icon-pdf: #e5534b;
-  --fd-icon-archive: #c98a2e;
-
-  /* 代码编辑区与语法着色（在线编辑器两层必须用同一套颜色变量） */
-  --fd-code-bg: #ffffff;
-  --fd-code-text: #1a1a1a;
-  --fd-mark-bg: #fff3a3;
-  --fd-mark-current-bg: #ff9f1a;
-  --fd-mark-text: #1a1a1a;
-  --fd-tok-comment: #6a737d;
-  --fd-tok-string: #0a7d33;
-  --fd-tok-number: #b45309;
-  --fd-tok-keyword: #0b5fa5;
-  --fd-tok-literal: #8250df;
-  --fd-tok-property: #a31515;
-  --fd-tok-punct: #6b6b6b;
-
-  --fd-radius-sm: 8px;
-  --fd-radius: 12px;
-  --fd-radius-lg: 16px;
-
-  --fd-shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
-  --fd-shadow-2: 0 10px 30px rgba(16, 24, 40, 0.14);
-  --fd-shadow-fab: 0 6px 16px rgba(243, 128, 32, 0.4);
-
-  --fd-row-height: 60px;
-  --fd-icon-size: 40px;
-  --fd-tap: 44px; /* 触屏最小可点区域 */
-}
-
-/* 深色：手动指定，或在 auto 下跟随系统 */
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --fd-accent: #ff9d4d;
-  --fd-accent-strong: #f38020;
-  --fd-accent-soft: #3a2a1b;
-  --fd-primary: #6cb6ff;
-  --fd-primary-soft: #1b2733;
-  --fd-danger: #ff8a8a;
-  --fd-danger-soft: #3a2124;
-
-  --fd-bg: #0f1216;
-  --fd-surface: #171b21;
-  --fd-surface-2: #1e242c;
-  --fd-surface-3: #262d36;
-  --fd-border: #2a3038;
-  --fd-border-strong: #3a424d;
-
-  --fd-text: #e6e8eb;
-  --fd-text-soft: #c3c9d1;
-  --fd-text-muted: #9aa4b2;
-
-  --fd-selected-bg: #1d2b3a;
-  --fd-selected-border: #6cb6ff;
-
-  --fd-success: #7ee2a8;
-  --fd-success-soft: #16281d;
-
-  --fd-code-bg: #12161c;
-  --fd-code-text: #e6e8eb;
-  --fd-mark-bg: #5c4a12;
-  --fd-mark-current-bg: #b7791f;
-  --fd-mark-text: #f7f7f7;
-  --fd-tok-comment: #8b949e;
-  --fd-tok-string: #7ee787;
-  --fd-tok-number: #ffab70;
-  --fd-tok-keyword: #79c0ff;
-  --fd-tok-literal: #d2a8ff;
-  --fd-tok-property: #ffa198;
-  --fd-tok-punct: #9aa4b2;
-
-  --fd-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --fd-shadow-2: 0 10px 30px rgba(0, 0, 0, 0.5);
-  --fd-shadow-fab: 0 6px 16px rgba(0, 0, 0, 0.5);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root[data-theme="auto"] {
-    color-scheme: dark;
-
-    --fd-accent: #ff9d4d;
-    --fd-accent-strong: #f38020;
-    --fd-accent-soft: #3a2a1b;
-    --fd-primary: #6cb6ff;
-    --fd-primary-soft: #1b2733;
-    --fd-danger: #ff8a8a;
-    --fd-danger-soft: #3a2124;
-
-    --fd-bg: #0f1216;
-    --fd-surface: #171b21;
-    --fd-surface-2: #1e242c;
-    --fd-surface-3: #262d36;
-    --fd-border: #2a3038;
-    --fd-border-strong: #3a424d;
-
-    --fd-text: #e6e8eb;
-    --fd-text-soft: #c3c9d1;
-    --fd-text-muted: #9aa4b2;
-
-    --fd-selected-bg: #1d2b3a;
-    --fd-selected-border: #6cb6ff;
-
-    --fd-success: #7ee2a8;
-    --fd-success-soft: #16281d;
-
-    --fd-code-bg: #12161c;
-    --fd-code-text: #e6e8eb;
-    --fd-mark-bg: #5c4a12;
-    --fd-mark-current-bg: #b7791f;
-    --fd-mark-text: #f7f7f7;
-    --fd-tok-comment: #8b949e;
-    --fd-tok-string: #7ee787;
-    --fd-tok-number: #ffab70;
-    --fd-tok-keyword: #79c0ff;
-    --fd-tok-literal: #d2a8ff;
-    --fd-tok-property: #ffa198;
-    --fd-tok-punct: #9aa4b2;
-
-    --fd-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --fd-shadow-2: 0 10px 30px rgba(0, 0, 0, 0.5);
-    --fd-shadow-fab: 0 6px 16px rgba(0, 0, 0, 0.5);
-  }
-}
-
 * {
   box-sizing: border-box;
 }
@@ -179,14 +9,10 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Adjusted", "Segoe UI",
-    "Liberation Sans", "Microsoft YaHei", sans-serif;
-  font-size: 15px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Adjusted",
+    "Segoe UI", "Liberation Sans", sans-serif;
   margin: 0;
-  background-color: var(--fd-bg);
-  color: var(--fd-text);
   -webkit-tap-highlight-color: transparent;
-  -webkit-font-smoothing: antialiased;
 }
 
 /* Hide the app until it's ready */
@@ -200,103 +26,48 @@ ul {
   margin: 0;
 }
 
+.file-list {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 0 4px;
+}
+
+.file-list > li {
+  width: 33.33%;
+}
+
+@media only screen and (max-width: 768px) {
+  .file-list > li {
+    width: 100%;
+  }
+}
+
 a {
   text-decoration: none;
   color: inherit;
 }
 
-button {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  font: inherit;
-  color: inherit;
-}
-
-button:disabled {
-  cursor: default;
-}
-
 input[type="search"] {
-  background-color: var(--fd-surface-2);
-  color: var(--fd-text);
-  border: 1px solid transparent;
-  border-radius: 999px;
+  background-color: whitesmoke;
+  border: none;
+  border-radius: 16px;
   width: 100%;
-  padding: 9px 14px;
-  transition: border-color 0.15s ease, background-color 0.15s ease;
-}
-
-input[type="search"]::placeholder {
-  color: var(--fd-text-muted);
-}
-
-input[type="search"]:focus {
-  outline: none;
-  background-color: var(--fd-surface);
-  border-color: var(--fd-primary);
-}
-
-/* 键盘可达性：只在键盘操作时显示焦点圈 */
-:focus-visible {
-  outline: 2px solid var(--fd-primary);
-  outline-offset: 2px;
-}
-
-/* ------------------------------------------------------------------ *
- * 文件列表：view-list（一行一项） / view-grid（卡片网格）
- * ------------------------------------------------------------------ */
-
-.file-list {
-  padding: 4px 10px 8px;
-  outline: none;
-}
-
-.file-list.view-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.file-list.view-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-  gap: 8px;
-}
-
-.file-list > li {
-  min-width: 0;
+  padding: 8px 12px;
 }
 
 .file-item {
-  position: relative;
+  height: 64px;
+  padding: 8px 4px;
+  transition: background-color 0.2s ease-in-out;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: var(--fd-row-height);
-  padding: 8px 10px;
-  border: 1px solid transparent;
-  border-radius: var(--fd-radius);
+  gap: 8px;
   cursor: pointer;
   user-select: none;
-  -webkit-user-select: none;
-  transition: background-color 0.12s ease, border-color 0.12s ease,
-    box-shadow 0.12s ease, transform 0.12s ease;
 }
 
 .file-item:hover {
-  background-color: var(--fd-surface-2);
-}
-
-.file-item.selected {
-  background-color: var(--fd-selected-bg);
-  border-color: var(--fd-selected-border);
-}
-
-.file-item.focused {
-  border-color: var(--fd-primary);
-  box-shadow: 0 0 0 2px var(--fd-primary-soft);
+  background-color: #f5f5f5;
 }
 
 .file-item > div {
@@ -310,60 +81,12 @@ input[type="search"]:focus {
 }
 
 .file-icon {
-  width: var(--fd-icon-size);
-  height: var(--fd-icon-size);
+  width: 48px;
+  height: 48px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--fd-radius-sm);
-  overflow: hidden;
-}
-
-.file-icon img,
-.file-icon svg {
-  display: block;
-  max-width: 100%;
-  max-height: 100%;
-}
-
-/* 文件夹 / 类型图标着色（由 FolderIcon 与 MimeIcon 的 class 决定） */
-.file-icon {
-  color: var(--fd-icon-file);
-}
-
-.file-icon.tone-image {
-  color: var(--fd-icon-image);
-}
-
-.file-icon.tone-video {
-  color: var(--fd-icon-video);
-}
-
-.file-icon.tone-audio {
-  color: var(--fd-icon-audio);
-}
-
-.file-icon.tone-pdf {
-  color: var(--fd-icon-pdf);
-}
-
-.file-icon.tone-archive {
-  color: var(--fd-icon-archive);
-}
-
-.file-icon.tone-folder {
-  color: var(--fd-icon-folder);
-}
-
-/* 缩略图不参与着色，避免滤镜影响真实图片 */
-.file-icon:has(img) {
-  color: inherit;
-}
-
-/* 网格视图：隐藏日期，只留大小/类型，卡片更干净 */
-.file-list.view-grid .file-date {
-  display: none;
 }
 
 .file-name,
@@ -373,163 +96,15 @@ input[type="search"]:focus {
   overflow: hidden;
 }
 
-.file-name {
-  font-weight: 500;
-}
-
 .file-attr {
-  margin-top: 3px;
-  color: var(--fd-text-muted);
-  font-size: 0.78em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  margin-top: 4px;
+  color: dimgray;
+  font-size: 0.8em;
 }
 
-.file-attr > span + span::before {
-  content: "·";
-  margin: 0 6px;
-  color: var(--fd-border-strong);
+.file-attr > span + span {
+  margin-left: 8px;
 }
-
-.file-more {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  color: var(--fd-text-muted);
-  transition: background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
-}
-
-.file-more:hover {
-  background-color: var(--fd-surface-3);
-  color: var(--fd-text);
-}
-
-.file-more svg {
-  width: 20px;
-  height: 20px;
-  display: block;
-}
-
-/* 多选模式下的勾选圈 */
-.file-check {
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  border: 2px solid var(--fd-border-strong);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: transparent;
-  font-size: 12px;
-  line-height: 1;
-  transition: background-color 0.12s ease, border-color 0.12s ease;
-}
-
-.file-item.selected .file-check {
-  background-color: var(--fd-primary);
-  border-color: var(--fd-primary);
-  color: #fff;
-}
-
-/* 网格视图：图标居中放大、名称居中两行、属性只留日期 */
-.file-list.view-grid .file-item {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  min-height: 0;
-  padding: 10px 8px;
-  text-align: center;
-}
-
-.file-list.view-grid .file-icon {
-  width: 100%;
-  height: 72px;
-  margin: 0 auto;
-}
-
-.file-list.view-grid .file-body {
-  width: 100%;
-}
-
-.file-list.view-grid .file-name {
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-  font-size: 0.85em;
-  line-height: 1.35;
-}
-
-.file-list.view-grid .file-attr > span + span::before {
-  content: "";
-  margin: 0;
-}
-
-.file-list.view-grid .file-attr {
-  font-size: 0.72em;
-}
-
-.file-list.view-grid .file-more {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 28px;
-  height: 28px;
-  background-color: transparent;
-}
-
-.file-list.view-grid .file-check {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-}
-
-/* 触屏：操作按钮常显，桌面：悬停才显（更清爽） */
-@media (hover: hover) and (pointer: fine) {
-  .file-list.view-list .file-item .file-more {
-    opacity: 0;
-  }
-
-  .file-list.view-list .file-item:hover .file-more,
-  .file-list.view-list .file-item:focus-within .file-more,
-  .file-list.view-list .file-item.selected .file-more {
-    opacity: 1;
-  }
-}
-
-@media only screen and (max-width: 768px) {
-  .file-list {
-    padding: 4px 6px 8px;
-  }
-
-  .file-list.view-grid {
-    grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  }
-
-  .file-attr {
-    font-size: 0.75em;
-  }
-
-  .contextmenu-filename {
-    min-width: 0;
-  }
-
-  .dialog-container {
-    max-width: 94vw;
-  }
-}
-
-/* ------------------------------------------------------------------ *
- * 悬浮操作按钮与进度
- * ------------------------------------------------------------------ */
 
 progress {
   position: fixed;
@@ -546,44 +121,30 @@ button.circle {
 .upload-button,
 .create-folder-button {
   position: fixed;
-  width: 52px;
-  height: 52px;
+  width: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background-color: var(--fd-accent);
+  background-color: rgb(243, 128, 32);
   cursor: pointer;
-  box-shadow: var(--fd-shadow-fab);
+  box-shadow: 2px 4px 6px rgba(0, 0, 0, 0.3);
   z-index: 25;
-  transition: transform 0.15s ease, filter 0.15s ease;
-}
-
-.upload-button:hover,
-.create-folder-button:hover {
-  filter: brightness(0.96);
-  transform: translateY(-1px);
 }
 
 .upload-button {
   right: 16px;
-  bottom: 20px;
+  bottom: 16px;
 }
 
 .create-folder-button {
   right: 16px;
-  bottom: 84px;
+  bottom: 80px;
 }
-
-/* ------------------------------------------------------------------ *
- * 右键/长按菜单
- * ------------------------------------------------------------------ */
 
 .contextmenu-filename {
   padding: 12px;
   min-width: 256px;
-  font-weight: 600;
-  border-bottom: 1px solid var(--fd-border);
 }
 
 .contextmenu-list > li > * {
@@ -591,18 +152,25 @@ button.circle {
   width: 100%;
   padding: 12px;
   text-align: left;
-  transition: background-color 0.15s ease;
+  transition: background-color 0.2s ease-in-out;
   font-size: inherit;
-  border-radius: var(--fd-radius-sm);
 }
 
 .contextmenu-list > li > *:hover {
-  background-color: var(--fd-surface-2);
+  background-color: whitesmoke;
 }
 
-/* ------------------------------------------------------------------ *
- * 过渡动画
- * ------------------------------------------------------------------ */
+button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+button:disabled {
+  cursor: default;
+}
 
 .fade-enter-active,
 .fade-leave-active {
@@ -630,4 +198,14 @@ button.circle {
 .slide-up-enter-from,
 .slide-up-leave-to {
   transform: translateY(100%);
+}
+
+@media only screen and (max-width: 768px) {
+  .contextmenu-filename {
+    min-width: 0;
+  }
+
+  .dialog-container {
+    max-width: 94vw;
+  }
 }

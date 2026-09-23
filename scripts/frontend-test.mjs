@@ -9,7 +9,6 @@
  */
 import {
   classifyJsonText,
-  formatDate,
   detectJsonIndent,
   prettyJsonText,
   splitBom,
@@ -98,20 +97,7 @@ check("带 BOM 的严格 JSON", classifyJsonText(withBom), "valid");
 check("语法错误", classifyJsonText('{"a": }'), "invalid");
 check("空内容", classifyJsonText("   "), "empty");
 
-section("7. 列表日期格式（越近越简短）");
-const now = new Date();
-const pad = (n) => String(n).padStart(2, "0");
-const clock = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-check("今天的显示为「今天 HH:MM」", formatDate(now.toISOString()), `今天 ${clock}`);
-const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 9, 5);
-check("昨天显示为「昨天 HH:MM」", formatDate(yesterday.toISOString()), "昨天 09:05");
-const sameYear = new Date(now.getFullYear(), 0, 15, 8, 30);
-const expectedSameYear = now.getMonth() === 0 && now.getDate() === 15 ? `今天 ${clock}` : "01-15 08:30";
-check("同年显示为「MM-DD HH:MM」", formatDate(sameYear.toISOString()), expectedSameYear);
-check("跨年只显示日期", formatDate(new Date(now.getFullYear() - 2, 4, 6).toISOString()), `${now.getFullYear() - 2}-05-06`);
-check("空值返回空串", formatDate(null), "");
-
-section("8. 注释剥离（仅用于判定，不写回文件）");
+section("7. 注释剥离（仅用于判定，不写回文件）");
 check("剥离行注释", stripJsonComments('{"a":1//x\n}').includes("//"), false);
 check("剥离块注释", stripJsonComments('{/*x*/"a":1}').includes("/*"), false);
 check("字符串里的 // 不当注释", stripJsonComments('{"u":"http://x"}').includes("http://x"), true);

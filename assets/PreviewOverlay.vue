@@ -13,6 +13,27 @@
           <span class="preview-title" v-text="displayName"></span>
           <span class="preview-meta" v-text="metaText"></span>
           <span class="preview-spacer"></span>
+          <template v-if="kind === 'image' && total > 1">
+            <button
+              type="button"
+              class="preview-button"
+              aria-label="上一张"
+              :disabled="!hasPrev"
+              @click="stepImage(-1)"
+            >
+              <span>‹ 上一张</span>
+            </button>
+            <span class="preview-meta" v-text="positionLabel"></span>
+            <button
+              type="button"
+              class="preview-button"
+              aria-label="下一张"
+              :disabled="!hasNext"
+              @click="stepImage(1)"
+            >
+              <span>下一张 ›</span>
+            </button>
+          </template>
           <button
             v-if="kind === 'image'"
             type="button"
@@ -53,7 +74,13 @@
           v-text="status"
         ></p>
 
-        <div class="preview-stage">
+        <div
+          class="preview-stage"
+          @touchstart.passive="onStageTouchStart"
+          @touchmove="onStageTouchMove"
+          @touchend="onStageTouchEnd"
+          @touchcancel="onStageTouchCancel"
+        >
           <div v-if="loading" class="preview-state">加载中...</div>
 
           <div v-else-if="loadError" class="preview-state error">
@@ -98,6 +125,7 @@
         </div>
 
         <p v-if="kind === 'image'" class="preview-hint">
+          <template v-if="total > 1">左右滑动（或按 ← →）切换同目录图片；</template>
           双击图片或滚动滚轮可以放大 / 还原。
         </p>
       </div>
@@ -115,6 +143,7 @@ import {
   downloadKey,
   errorMessage,
   formatSize,
+  isImageFile,
   previewKind,
   rawUrl,
   saveBlob,
@@ -168,9 +197,14 @@ export default {
       type: Object,
       default: null,
     },
+    /** 同目录的候选文件（用于左右切换图片），由父组件传入 */
+    siblings: {
+      type: Array,
+      default: () => [],
+    },
   },
 
-  emits: ["update:modelValue"],
+  emits: ["update:modelValue", "select"],
 
   data: () => ({
     loading: false,
@@ -216,6 +250,38 @@ export default {
       return this.loading;
     },
 
+    /** 同目录里可以左右切换的图片（顺序与列表一致） */
+    imageSiblings() {
+      const list = Array.isArray(this.siblings) ? this.siblings : [];
+      return list.filter((entry) => entry && isImageFile(entry.name, entry.contentType));
+    },
+
+    total() {
+      return this.imageSiblings.length;
+    },
+
+    /** 当前图在同目录图片里的下标；-1 表示不在列表里 */
+    currentIndex() {
+      const key = this.itemKey;
+      if (!key) return -1;
+      return this.imageSiblings.findIndex((entry) => entry && entry.key === key);
+    },
+
+    hasPrev() {
+      return this.currentIndex > 0;
+    },
+
+    hasNext() {
+      const index = this.currentIndex;
+      return index >= 0 && index < this.total - 1;
+    },
+
+    positionLabel() {
+      const index = this.currentIndex;
+      if (index < 0 || !this.total) return "";
+      return `${index + 1}/${this.total}`;
+    },
+
     /** 放大时按容器宽度百分比撑开，适应窗口时交给 max-width/max-height */
     imageStyle() {
       if (this.zoom <= 1) return { maxWidth: "100%", maxHeight: "100%" };
@@ -250,6 +316,19 @@ export default {
         event.preventDefault();
         event.stopPropagation();
         this.close();
+        return;
+      }
+      // 看图时用左右方向键切换同目录图片
+      if (this.kind === "image" && this.total > 1 && this.zoom <= 1) {
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          event.stopPropagation();
+          this.stepImage(-1);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          event.stopPropagation();
+          this.stepImage(1);
+        }
       }
     };
     document.addEventListener("keydown", this._onKeydown, true);
@@ -262,6 +341,67 @@ export default {
   },
 
   methods: {
+    /* ---------------- 同目录图片切换 ---------------- */
+
+    /**
+     * 切到上一张 / 下一张（不放环形绕回，到头就是到头，行为更好预期）。
+     * 通过 select 事件把新条目交回父组件，父组件更新 item 后这里自动重新加载。
+     */
+    stepImage(delta) {
+      const index = this.currentIndex;
+      if (index < 0) return;
+      const next = index + delta;
+      if (next < 0 || next >= this.total) return;
+      const target = this.imageSiblings[next];
+      if (!target) return;
+      this.zoom = 1;
+      this.$emit("select", target);
+    },
+
+    /** 触摸滑动：横向位移超过 50px 且明显大于纵向位移才切换（避免和竖向滚动打架） */
+    onStageTouchStart(event) {
+      const touch = event && event.touches && event.touches[0];
+      if (!touch) return;
+      this._swipe = { x: touch.clientX, y: touch.clientY, at: Date.now() };
+    },
+
+    /**
+     * 横向滑动时阻止默认行为：否则在手机上会被浏览器当成「返回上一页」的手势，
+     * 直接把整个页面带走（看图时右滑尤其容易触发）。
+     * 元素上的 touchmove 默认不是 passive，所以这里可以 preventDefault。
+     */
+    onStageTouchMove(event) {
+      const start = this._swipe;
+      if (!start || this.kind !== "image" || this.total <= 1 || this.zoom > 1) return;
+      const touch = event && event.touches && event.touches[0];
+      if (!touch) return;
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+        if (event.cancelable) event.preventDefault();
+      }
+    },
+
+    onStageTouchCancel() {
+      this._swipe = null;
+    },
+
+    onStageTouchEnd(event) {
+      const start = this._swipe;
+      this._swipe = null;
+      if (!start || this.kind !== "image" || this.total <= 1) return;
+      // 放大状态下滑动用于看细节，不切图
+      if (this.zoom > 1) return;
+      const touch =
+        (event && event.changedTouches && event.changedTouches[0]) ||
+        (event && event.touches && event.touches[0]);
+      if (!touch) return;
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      this.stepImage(dx < 0 ? 1 : -1);
+    },
+
     /* ---------------- 打开 / 关闭 ---------------- */
 
     close() {
@@ -526,6 +666,7 @@ export default {
   padding: 12px;
   overflow: auto;
   background-color: #1f1f1f;
+  overscroll-behavior: contain;
 }
 
 .preview-image {

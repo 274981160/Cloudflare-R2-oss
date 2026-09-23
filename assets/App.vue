@@ -364,7 +364,12 @@
 
     <Shares v-model="showShares"></Shares>
 
-    <PreviewOverlay v-model="showPreview" :item="previewItem"></PreviewOverlay>
+    <PreviewOverlay
+      v-model="showPreview"
+      :item="previewItem"
+      :siblings="previewSiblings"
+      @select="onPreviewSelect"
+    ></PreviewOverlay>
 
     <Transition name="fade">
       <div v-if="notice" class="notice" :class="noticeType" role="status" v-text="notice"></div>
@@ -400,6 +405,7 @@ import {
   extractArchive,
   formatDate,
   formatSize,
+  isImageFile,
   isTextFile,
   joinKey,
   listDirectory,
@@ -512,6 +518,13 @@ export default {
     manageKeys() {
       const permissions = Array.isArray(this.profile.permissions) ? this.profile.permissions : [];
       return this.profile.authenticated === true && permissions.indexOf("*") !== -1;
+    },
+
+    /** 当前目录里的图片（顺序与列表一致），供预览左右切换 */
+    previewSiblings() {
+      return this.visibleFiles.filter((file) =>
+        isImageFile(file && file.name, file && file.contentType)
+      );
     },
 
     compressSourceCount() {
@@ -1107,6 +1120,12 @@ export default {
       };
       this.editorForceText = true;
       this.showTextEditor = true;
+    },
+
+    /** 预览里切到上一张/下一张：只换对象，预览层会自己重新拉取 */
+    onPreviewSelect(item) {
+      if (!item || !item.key) return;
+      this.previewItem = item;
     },
 
     async onEditorSaved() {

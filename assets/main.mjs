@@ -1862,6 +1862,23 @@ export function prettyJsonText(source, options) {
   return { text: result, changed: true };
 }
 
+/** 可按图片预览的扩展名（用于 MIME 不可靠时兜底判断） */
+const IMAGE_EXTENSIONS = [
+  "png", "jpg", "jpeg", "jfif", "gif", "webp", "avif", "bmp", "ico",
+];
+
+/**
+ * 这个文件能不能按图片预览。
+ * 与预览组件的判定保持一致：先看 MIME，MIME 不可靠时按扩展名兜底。
+ * @param {string} name 文件名
+ * @param {string} [contentType]
+ */
+export function isImageFile(name, contentType) {
+  if (previewKind(contentType) === "image") return true;
+  const extension = fileExtension(name).replace(/^\./, "").toLowerCase();
+  return IMAGE_EXTENSIONS.indexOf(extension) !== -1;
+}
+
 /**
  * 重名时生成「xxx - 副本.ext」
  * @param {string} name

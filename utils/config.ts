@@ -24,6 +24,8 @@ export const SHARE_ENDPOINT = "/s/";
 export const DEFAULT_MAX_PUT_SIZE = 100 * 1000 * 1000; // 100MB
 export const DEFAULT_MAX_DEPTH_ITEMS = 10000;
 export const DEFAULT_MAX_ZIP_SIZE = 1024 * 1024 * 1024; // 1GB
+export const DEFAULT_MAX_UNZIP_ENTRIES = 5000;
+export const DEFAULT_MAX_UNZIP_FILE_SIZE = 100 * 1000 * 1000; // 100MB
 
 /** 上报给 WebDAV 客户端的“可用空间”，避免客户端因空间检查而拒绝写入。 */
 export const REPORTED_AVAILABLE_BYTES = 1024 * 1024 * 1024 * 1024; // 1TB
@@ -76,6 +78,16 @@ export function maxDepthItems(env: Env): number {
 
 export function maxZipSize(env: Env): number {
   return readInt(env.WEBDAV_MAX_ZIP_SIZE, DEFAULT_MAX_ZIP_SIZE);
+}
+
+/** 在线解压时允许的 zip 条目总数上限。 */
+export function maxUnzipEntries(env: Env): number {
+  return readInt(env.WEBDAV_MAX_UNZIP_ENTRIES, DEFAULT_MAX_UNZIP_ENTRIES);
+}
+
+/** 在线解压时单个文件解压后的大小上限（受内存限制，默认 100MB）。 */
+export function maxUnzipFileSize(env: Env): number {
+  return readInt(env.WEBDAV_MAX_UNZIP_FILE_SIZE, DEFAULT_MAX_UNZIP_FILE_SIZE);
 }
 
 export function webdavVersion(): string {

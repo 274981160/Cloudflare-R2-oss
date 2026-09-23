@@ -93,6 +93,43 @@
 - 文件：单个文件打成 zip。
 - 需要在请求头带认证；前端用 `fetch` + Blob 触发下载。
 - 超过 `WEBDAV_MAX_ZIP_SIZE` 返回 `413`。
+- 打包是小对象并发预取（默认 8 个批次 + 1MB 以下整读），文件夹里很多小文件时下载明显更快。
+
+## 4.1 `POST /api/unzip/{zipKey}` — 在线解压
+
+把网盘里的 zip 解压到指定目录（默认解到 zip 所在目录）。需要认证，
+zip 本身要可读，落盘位置要可写；恶意条目名（`..` 跳级、绝对路径）会被拒绝。
+
+```json
+// 请求体（可选）；target 是想解压到的目标目录 key
+{ "target": "docs/out" }
+```
+
+- 响应 `200`：
+  ```json
+  { "target": "docs/out", "files": 12, "errors": [] }
+  ```
+- `errors` 数组收集个别失败条目（如不支持的压缩算法、超限）；整体不是合法 zip 返回 `400`。
+- 上限：`WEBDAV_MAX_UNZIP_ENTRIES`（默认 5000 条）、`WEBDAV_MAX_UNZIP_FILE_SIZE`（默认 100MB/条）。
+- 只支持 store 与 deflate（zip 最常用的两种）；ZIP64 / 多盘暂不支持。
+
+## 4.2 `POST /api/compress/{targetZipKey}` — 在线压缩
+
+把选中的若干文件/文件夹打包成一个 zip 存回网盘（不下载）。需要认证，
+目标 key 要可写，每个源要可读。
+
+```json
+{ "sources": ["docs/a.txt", "docs/归档目录"] }
+```
+
+- 目标 key 会带上 JSON 里的 `sources` 对应的顶层名字，例如上面会生成
+  `docs/归档目录/... 与 docs/a.txt`。
+- 响应 `200`：
+  ```json
+  { "key": "docs/打包.zip", "size": 10240, "count": 5 }
+  ```
+- 打包体积超过 `WEBDAV_MAX_ZIP_SIZE` 返回 `413`；无权限返回 `403`。
+- 通过 R2 分片上传实现，不把整包读进内存。
 
 ## 5. `GET /raw/{key}`
 

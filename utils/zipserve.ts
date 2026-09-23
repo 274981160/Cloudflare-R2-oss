@@ -1,6 +1,11 @@
 /**
  * 目录/单文件打包下载。被 `/api/zip`（需要认证）与 `/s/{token}?zip=1`（分享链接）共用。
- * store 模式流式输出：媒体文件压不动，这样 CPU 占用最低，也不把整包读进内存。
+ *
+ * 性能要点：
+ * - store 模式流式输出，不把整包读进内存；
+ * - 写文件前先并发预取若干个对象的 body，让 R2 的读取与上一个文件的写出重叠，
+ *   文件夹里有很多小文件时能把「逐个 GET 的串行延迟」压下来；
+ * - 打包开始前就算出精确的总字节数并回 `Content-Length`，浏览器/客户端能显示真实进度条。
  */
 import { Env, maxZipSize } from "./config";
 import {
@@ -12,13 +17,38 @@ import {
 } from "./core";
 import { ZipWriter } from "./zip";
 
-interface ZipEntry {
+export interface ZipEntry {
   name: string;
   /** 空字符串表示没有实际对象（目录条目或源对象已消失）。 */
   key: string;
   isDirectory: boolean;
   size: number;
   uploaded: Date | null;
+}
+
+/** 并发预取的对象数量（也是 R2 GET 的最大 in-flight 数）。 */
+const PREFETCH = 8;
+
+/** 估算一个 zip 的精确字节数（store 模式 + data descriptor + UTF-8 标志）。 */
+export function estimateZipSize(entries: ZipEntry[]): number {
+  const encoder = new TextEncoder();
+  let total = 0;
+  for (const entry of entries) {
+    const nameLen = encoder.encode(entry.name).length;
+    // 本地文件头：30 字节固定 + 名称
+    total += 30 + nameLen;
+    if (!entry.isDirectory) {
+      // 文件数据 + 16 字节 data descriptor
+      total += entry.size + 16;
+    }
+  }
+  // 中央目录：每条 46 字节固定 + 名称
+  for (const entry of entries) {
+    total += 46 + encoder.encode(entry.name).length;
+  }
+  // EOCD
+  total += 22;
+  return total;
 }
 
 export interface ZipOptions {
@@ -125,26 +155,86 @@ export async function buildZipResponse(
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const writer = new ZipWriter(controller);
-      try {
-        for (const entry of entries) {
-          if (entry.isDirectory) {
-            writer.addDirectory(entry.name, entry.uploaded);
-            continue;
-          }
-
-          let body: ReadableStream<Uint8Array> | null = null;
-          if (entry.key) {
-            const object: any = await bucket.get(entry.key);
-            if (object && "body" in object) {
-              body = object.body as ReadableStream<Uint8Array>;
-            }
-          }
-          await writer.addFile(entry.name, body, entry.uploaded);
+      const fetches = new Map<string, Promise<any>>();
+      const getBody = (key: string) => {
+        let promise = fetches.get(key);
+        if (!promise) {
+          promise = bucket.get(key).then((object: any) =>
+            object && "body" in object ? (object.body as ReadableStream<Uint8Array>) : null
+          );
+          fetches.set(key, promise);
         }
-        writer.finish();
-      } catch (error) {
-        controller.error(error);
+        return promise;
+      };
+
+      /** 小文件整体读进内存，与「上一个文件的写出」真正并发（R2 读取重叠）。 */
+      const SMALL_LIMIT = 1024 * 1024; // 1MB 以下才整读
+      const fileEntries = entries.filter((e) => !e.isDirectory && e.key);
+
+      /** 已整读的小文件字节：key -> Uint8Array | null（null 表示对象消失） */
+      const buffered = new Map<string, Promise<Uint8Array | null>>();
+      let cursor = 0;
+      const prefetchSmall = () => {
+        while (buffered.size < PREFETCH && cursor < fileEntries.length) {
+          const entry = fileEntries[cursor++];
+          if (entry.size > SMALL_LIMIT) continue; // 大文件不走整读
+          buffered.set(
+            entry.key,
+            getBody(entry.key).then(async (body) => {
+              if (!body) return null;
+              const reader = body.getReader();
+              const chunks: Uint8Array[] = [];
+              let total = 0;
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value && value.length) {
+                  chunks.push(value);
+                  total += value.length;
+                }
+              }
+              const merged = new Uint8Array(total);
+              let offset = 0;
+              for (const chunk of chunks) {
+                merged.set(chunk, offset);
+                offset += chunk.length;
+              }
+              return merged;
+            })
+          );
+        }
+      };
+      prefetchSmall();
+
+      for (const entry of entries) {
+        if (entry.isDirectory) {
+          writer.addDirectory(entry.name, entry.uploaded);
+          continue;
+        }
+
+        let body: ReadableStream<Uint8Array> | null = null;
+        if (entry.key) {
+          const bufferedPromise = buffered.get(entry.key);
+          if (bufferedPromise) {
+            const bytes = await bufferedPromise;
+            buffered.delete(entry.key);
+            prefetchSmall();
+            if (bytes && bytes.length > 0) {
+              // 把整读的字节包成一个一次性流交给 writer
+              body = new ReadableStream<Uint8Array>({
+                start(streamController) {
+                  streamController.enqueue(bytes);
+                  streamController.close();
+                },
+              });
+            }
+          } else {
+            body = await getBody(entry.key);
+          }
+        }
+        await writer.addFile(entry.name, body, entry.uploaded);
       }
+      writer.finish();
     },
   });
 

@@ -224,6 +224,31 @@ check "zip 单文件 200" 200 "$(acode "$Z/docs/hello.txt")"
 check "raw 强制下载头" 1 "$(hdr "$R/docs/hello.txt?download=1" | grep -ci '^content-disposition: attachment')"
 check "raw 目录 404" 404 "$(code "$R/docs")"
 
+section "13.5 在线解压 / 压缩"
+rm -rf /tmp/smoke-zipdir && mkdir -p /tmp/smoke-zipdir/tree/sub
+printf 'unzip-online' > /tmp/smoke-zipdir/tree/alpha.txt
+printf 'nested-deep' > /tmp/smoke-zipdir/tree/sub/beta.txt
+(cd /tmp/smoke-zipdir && rm -f ../smoke-online.zip && zip -q -r ../smoke-online.zip tree)
+check "创建 zip 夹具 201" 201 "$(acode -X PUT --data-binary @/tmp/smoke-online.zip -H 'Content-Type: application/zip' "$W/online.zip")"
+check "解压 zip 200" 200 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"_smoke/online-out"}' "$BASE/api/unzip/_smoke/online.zip")"
+check "解压后文件存在 200" 200 "$(code "$W/online-out/tree/alpha.txt")"
+check "解压内容一致" "unzip-online" "$(curl -s "$W/online-out/tree/alpha.txt")"
+check "解压嵌套子目录文件 200" 200 "$(code "$W/online-out/tree/sub/beta.txt")"
+check "解压嵌套内容一致" "nested-deep" "$(curl -s "$W/online-out/tree/sub/beta.txt")"
+check "解压路径穿越被拒 400" 400 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"../_smoke"}' "$BASE/api/unzip/_smoke/online.zip")"
+check "解压到内部目录被拒 403" 403 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"_$flaredrive$/x"}' "$BASE/api/unzip/_smoke/online.zip")"
+check "压缩为 zip 200" 200 "$(acode -X POST -H 'Content-Type: application/json' -d '{"sources":["_smoke/online-out/tree","_smoke/online.zip"]}' "$BASE/api/compress/_smoke/made.zip")"
+check "压缩产物存在 200" 200 "$(code "$W/made.zip")"
+curl -s -u "$ADMIN" "$R/made.zip" -o /tmp/smoke-made.zip
+check "压缩产物是合法 zip" "PK" "$(head -c 2 /tmp/smoke-made.zip)"
+if command -v unzip >/dev/null 2>&1; then
+  atleast "压缩产物含原文件名" 1 "$(unzip -l /tmp/smoke-made.zip 2>/dev/null | grep -c 'alpha.txt')"
+  check "压缩产物不含外部文件" 0 "$(unzip -l /tmp/smoke-made.zip 2>/dev/null | grep -c 'docs/hello.txt')"
+fi
+check "压缩来源越权被拒 403" 403 "$(curl -s -o /dev/null -w '%{http_code}' -u "$USER1" -X POST -H 'Content-Type: application/json' -d '{"sources":["_smoke/online.zip"]}' "$BASE/api/compress/_smoke/user1-forbidden.zip")"
+check "解压 zip 不存在 404" 404 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"_smoke/out"}' "$BASE/api/unzip/_smoke/nope.zip")"
+check "解压非 zip 400" 400 "$(acode -X POST -H 'Content-Type: application/json' -d '{"target":"_smoke/out"}' "$BASE/api/unzip/_smoke/docs/hello.txt")"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

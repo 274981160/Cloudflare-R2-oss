@@ -23,7 +23,8 @@
 | 批量操作 | 多选文件与目录，批量移动、复制、删除、下载 |
 | 浏览体验 | 搜索当前目录、按名称/大小排序、面包屑导航、当前目录写进 URL（可前进后退/分享定位） |
 | 权限感知 | 无写权限的账号自动进入只读模式：隐藏上传与改动入口，列表上标注「只读」 |
-| 打包下载 | 目录一键递归打包为 zip 下载 |
+| 打包下载 | 目录一键递归打包为 zip 下载；小对象预取并发，文件夹里很多小文件也快 |
+| 在线压缩/解压 | 选中文件/文件夹右键「压缩为 zip」直接存回网盘；zip 文件右键「在线解压」到当前目录（内置 DEFLATE 解压器，不依赖第三方） |
 | 下载体验 | 点下载由浏览器原生下载（有进度条、立刻弹保存框）；私有模式下用短时效签名直链实现，不需要公开文件 |
 | 开放接口 | 生成式 **API Key**（只存摘要、可限定目录与有效期、随时吊销），`POST /api/upload/{path}` 一行 curl 上传 |
 | WebDAV | 标准 WebDAV 服务端，Windows / macOS / rclone 等客户端可直接挂载，支持锁（class 2） |
@@ -129,6 +130,8 @@ Pages 项目 → **自定义域** → 添加你的域名（域名需已托管在
 | `WEBDAV_MAX_PUT_SIZE` | 否 | `104857600` | 单次 `PUT` 与分片大小上限（字节），超过会返回 `413` |
 | `WEBDAV_MAX_DEPTH_ITEMS` | 否 | `10000` | `PROPFIND` 带 `Depth: infinity` 时最多返回的条目数，超出返回 `507` |
 | `WEBDAV_MAX_ZIP_SIZE` | 否 | `1073741824` | 目录 zip 打包的总大小上限（字节） |
+| `WEBDAV_MAX_UNZIP_ENTRIES` | 否 | `5000` | 在线解压时允许的 zip 条目总数上限 |
+| `WEBDAV_MAX_UNZIP_FILE_SIZE` | 否 | `104857600` | 在线解压时单个文件解压后的大小上限（字节，受运行时内存限制） |
 | `DOWNLOAD_SECRET` | 否 | 由账号变量派生 | 下载签名密钥。默认从账号环境变量派生，一般不用配；换掉它会让已签发的下载链接立即失效 |
 | `GUEST` | 否 | — | 匿名可写的前缀，逗号分隔；不配则匿名只读 |
 | `账号:密码` | 否 | — | 旧版兼容写法：环境变量名直接用 `账号:密码`，值是可写前缀 |
@@ -336,6 +339,8 @@ R2 是对象存储，没有真正的目录。本项目用三种形式表示目�
 | `/api/whoami` | `GET` | 登录状态与能力探测：用户名、权限、是否公开读、是否只读、单次上传上限、是否启用锁、是否 API Key 登录 |
 | `/api/list/{path}` | `GET` | 列出目录**直接子项**（不递归），返回 `files` 与 `folders`；无权限 `403`、不存在 `404` |
 | `/api/zip/{path}` | `GET` | 把目录（递归）或单个文件打包为 zip 下载；超过 `WEBDAV_MAX_ZIP_SIZE` 返回 `413` |
+| `/api/unzip/{zipKey}` | `POST` | 在线解压 zip 到指定目录（`body: {"target":"dir"}`） |
+| `/api/compress/{targetKey}` | `POST` | 在线压缩：把选中的文件/文件夹打包成 zip 存回网盘（`body: {"sources":[...]}`） |
 | `/api/upload/{path}` | `POST` / `PUT` | 脚本上传接口，支持 API Key；`multipart/form-data` 或原始字节流 |
 | `/api/keys` | `GET` / `POST` | 列举 / 创建 API Key（仅主账号） |
 | `/api/keys/{id}` | `DELETE` | 吊销 API Key（仅主账号） |
@@ -384,7 +389,7 @@ npx wrangler pages dev . --r2 BUCKET --persist-to .wrangler/state
 
 ### 冒烟测试
 
-仓库自带一套 WebDAV / API 冒烟测试（168 项断言，覆盖全部 WebDAV 方法、锁、Range、权限、API Key、旧格式兼容、zip 打包完整性等），本地起好服务后直接跑：
+仓库自带一套 WebDAV / API 冒烟测试（184 项断言，覆盖全部 WebDAV 方法、锁、Range、权限、API Key、旧格式兼容、zip 打包完整性、在线解压/压缩等），本地起好服务后直接跑：
 
 ```bash
 bash scripts/smoke-test.sh
@@ -451,10 +456,12 @@ Cloudflare-R2-oss/
 │   │   ├── whoami.ts   # 登录状态与能力探测
 │   │   ├── list/       # 目录列举（JSON）
 │   │   ├── zip/        # 目录打包下载
+│   │   ├── unzip/      # 在线解压 zip 到指定目录
+│   │   ├── compress/   # 在线压缩：选中文件/文件夹打包成 zip 存回网盘
 │   │   ├── upload/     # 给脚本用的上传接口，支持 API Key
 │   │   ├── keys/       # API Key 的创建 / 列举 / 吊销
 │   │   ├── shares/     # 分享链接的创建 / 列举 / 吊销
-│   │   └── versions/   # 编辑历史：列举 / 读取 / 恢复 / 删除
+│   │   └── sign/       # 下载直链签名（私有模式下让浏览器原生下载）
 │   ├── s/              # 公开分享入口（唯一允许匿名读内容的通道）
 │   └── raw/            # 对象字节直出：Range、条件请求、缩略图缓存头（需认证）
 │
@@ -471,14 +478,17 @@ Cloudflare-R2-oss/
 │   ├── serve.ts        # Range 与条件请求输出、目录 HTML 浏览页
 │   ├── zip.ts          # 零依赖流式 ZIP 写入器（store 模式）
 │   ├── zipserve.ts     # 打包下载（/api/zip 与分享 ?zip=1 共用）
+│   ├── zipmake.ts      # 在线压缩：多源收集 + R2 分片上传写回
+│   ├── unzip.ts        # 在线解压：R2 Range 读 zip 索引 + 逐条解压写回
+│   ├── inflate.ts      # 零依赖 DEFLATE 解压器（在线解压用）
 │   └── xml.ts          # XML 转义、multistatus 构造、请求体解析
 │
 ├── docs/
 │   └── API.md          # 网页端与后端的接口契约（冻结文件，改动需同步）
 │
 ├── scripts/
-│   ├── smoke-test.sh    # WebDAV / API 冒烟测试（公开读模式），168 项断言
-│   └── security-test.sh # 安全模型测试（默认私有模式），85 项断言
+│   ├── smoke-test.sh    # WebDAV / API 冒烟测试（公开读模式），184 项断言
+│   └── security-test.sh # 安全模型测试（默认私有模式），90 项断言
 │
 ├── package.json        # 没有任何运行时依赖；开发依赖只有 wrangler
 ├── tsconfig.json       # TypeScript 配置，仅供编辑器类型提示，不参与构建

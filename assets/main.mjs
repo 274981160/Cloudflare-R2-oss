@@ -750,14 +750,55 @@ export async function downloadKey(key, options) {
 }
 
 /** 目录/文件打包下载：`GET /api/zip/{path}`，保存为 `{名字}.zip` */
-export async function downloadZip(path) {
+export async function downloadZip(path, options) {
   const url = zipUrl(path);
+  const settings = options || {};
+  if (typeof settings.onProgress === "function") {
+    const blob = await fetchBlobWithProgress(url, { onProgress: settings.onProgress });
+    const name = basename(path) || "全部文件";
+    saveBlob(blob, name.toLowerCase().endsWith(".zip") ? name : `${name}.zip`);
+    return blob;
+  }
   const response = await apiFetch(url);
   if (!response.ok) throw new ApiError(await describeResponseError(response), response.status, url);
   const blob = await response.blob();
   const name = basename(path) || "全部文件";
   saveBlob(blob, name.toLowerCase().endsWith(".zip") ? name : `${name}.zip`);
   return blob;
+}
+
+/* ------------------------------------------------------------------ *
+ * 在线解压 / 压缩
+ * ------------------------------------------------------------------ */
+
+/**
+ * 在线解压：`POST /api/unzip/{zipKey}`，把 zip 解压到 target 目录。
+ * @param {string} zipKey
+ * @param {string} [target] 目标目录 key；省略时解到 zip 所在目录
+ * @returns {Promise<{target:string, files:number, errors:string[]}>}
+ */
+export async function extractArchive(zipKey, target) {
+  const encoded = encodeKeyPath(zipKey);
+  const url = `/api/unzip/${encoded}`;
+  const body = target ? JSON.stringify({ target }) : undefined;
+  const headers = body ? { "Content-Type": "application/json" } : undefined;
+  return apiFetchJson(url, { method: "POST", body, headers });
+}
+
+/**
+ * 在线压缩：`POST /api/compress/{targetKey}`，把选中的文件/文件夹打包成 zip。
+ * @param {string} targetKey 目标 zip 的网盘 key（如 `dir/归档.zip`）
+ * @param {string[]} sources 要打包的源 key 列表
+ * @returns {Promise<{key:string, size:number, count:number}>}
+ */
+export async function createArchive(targetKey, sources) {
+  const encoded = encodeKeyPath(targetKey);
+  const url = `/api/compress/${encoded}`;
+  return apiFetchJson(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sources }),
+  });
 }
 
 /** 复制文本到剪贴板（带 execCommand 兜底） */

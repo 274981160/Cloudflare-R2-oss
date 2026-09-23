@@ -139,6 +139,7 @@
     <div v-if="selectedItems.length" class="selection-toolbar">
       <span class="selection-count" v-text="`已选 ${selectedItems.length} 项`"></span>
       <button @click="downloadSelected">下载</button>
+      <button v-if="canWrite" @click="openCompressDialog(selectedItems)">压缩为zip</button>
       <button v-if="canWrite" @click="moveSelected">移动</button>
       <button v-if="canWrite" @click="copySelected">复制</button>
       <button v-if="canWrite" class="danger" @click="removeSelected">删除</button>
@@ -204,6 +205,25 @@
       </div>
     </Dialog>
 
+    <Dialog v-model="showCompressDialog">
+      <div class="form-dialog" @click.stop>
+        <h3 class="dialog-title">压缩为 zip</h3>
+        <input
+          type="text"
+          class="form-input"
+          v-model="compressName"
+          placeholder="压缩包名称"
+          @keyup.enter="confirmCompress"
+        />
+        <p class="form-hint" v-text="`将打包 ${compressSourceCount} 项，保存到「${currentFolderName}」`"></p>
+        <p v-if="formError" class="form-error" v-text="formError"></p>
+        <div class="form-actions">
+          <button type="button" class="text-button" @click="closeCompressDialog">取消</button>
+          <button type="button" class="primary-button" @click="confirmCompress">压缩</button>
+        </div>
+      </div>
+    </Dialog>
+
     <Dialog v-model="showContextMenu">
       <div class="contextmenu" @click.stop>
         <div class="contextmenu-filename" v-text="focusedItem ? focusedItem.name : ''"></div>
@@ -218,6 +238,9 @@
           </li>
           <li>
             <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
+          </li>
+          <li v-if="canWrite">
+            <button @click="runAction(() => openCompressDialog([focusedItem]))"><span>压缩为 zip</span></button>
           </li>
           <li v-if="canWrite">
             <button @click="runAction(() => renameItem(focusedItem))"><span>重命名</span></button>
@@ -253,6 +276,12 @@
           </li>
           <li v-else>
             <button @click="runAction(() => downloadItem(focusedItem))"><span>下载</span></button>
+          </li>
+          <li v-if="canWrite && isZipFile(focusedItem)">
+            <button @click="runAction(() => extractItem(focusedItem))"><span>在线解压</span></button>
+          </li>
+          <li v-if="canWrite">
+            <button @click="runAction(() => openCompressDialog([focusedItem]))"><span>压缩为 zip</span></button>
           </li>
           <li>
             <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
@@ -325,6 +354,7 @@ import {
   clearAuth,
   copyKey,
   copyTextToClipboard,
+  createArchive,
   createFolder as createFolderRequest,
   createShare,
   dirname,
@@ -332,6 +362,7 @@ import {
   downloadZip,
   duplicateName,
   errorMessage,
+  extractArchive,
   formatDate,
   formatSize,
   isTextFile,
@@ -343,6 +374,7 @@ import {
   rawUrl,
   removeKey,
   setUnauthorizedHandler,
+  stripExtension,
   thumbnailDigest,
   signedDownloadUrl,
   uploadWithThumbnail,
@@ -390,6 +422,9 @@ export default {
     showContextMenu: false,
     showNewFolderDialog: false,
     showRenameDialog: false,
+    showCompressDialog: false,
+    compressName: "",
+    compressSources: [],
     showFolderPicker: false,
     showTextEditor: false,
     showApiKeys: false,
@@ -436,6 +471,10 @@ export default {
     manageKeys() {
       const permissions = Array.isArray(this.profile.permissions) ? this.profile.permissions : [];
       return this.profile.authenticated === true && permissions.indexOf("*") !== -1;
+    },
+
+    compressSourceCount() {
+      return Array.isArray(this.compressSources) ? this.compressSources.length : 0;
     },
 
     directDownload() {
@@ -849,8 +888,39 @@ export default {
           return;
         }
         if (item.type === "folder") {
+          // 文件夹打包：优先临时签一个 zip 直链（原生下载带进度），
+          // 签名不可用再退回带进度的 XHR 取 Blob，避免「点了没反应」。
           this.showNotice(`正在打包「${item.name}」...`, "info");
-          await downloadZip(item.key);
+          let zipUrl = "";
+          if (this.signedForKey !== item.key) {
+            try {
+              zipUrl = (await signedDownloadUrl(item.key)) || "";
+            } catch (error) {
+              zipUrl = "";
+            }
+          }
+          if (zipUrl) {
+            const anchor = document.createElement("a");
+            anchor.href = zipUrl;
+            anchor.download = `${item.name}.zip`;
+            anchor.rel = "noopener";
+            anchor.style.display = "none";
+            document.body.appendChild(anchor);
+            anchor.click();
+            anchor.remove();
+            this.showNotice(`已开始打包下载「${item.name}」`, "success");
+            return;
+          }
+          let lastPercent = -1;
+          await downloadZip(item.key, {
+            onProgress: (event) => {
+              if (!event || !event.lengthComputable || !event.total) return;
+              const percent = Math.floor((event.loaded / event.total) * 100);
+              if (percent === lastPercent) return;
+              lastPercent = percent;
+              this.showNotice(`正在打包「${item.name}」 ${percent}%`, "info");
+            },
+          });
           this.showNotice(`「${item.name}」打包完成`, "success");
           return;
         }
@@ -880,12 +950,7 @@ export default {
       let failed = 0;
       for (const item of items) {
         try {
-          if (item.type === "folder") {
-            this.showNotice(`正在打包「${item.name}」...`, "info");
-            await downloadZip(item.key);
-          } else {
-            await downloadKey(item.key, { publicRead: this.directDownload });
-          }
+          await this.downloadItem(item);
         } catch (error) {
           failed++;
           console.error("下载失败", item.key, error);
@@ -1263,6 +1328,85 @@ export default {
         await this.fetchFiles();
       } catch (error) {
         this.formError = `重命名失败：${errorMessage(error)}`;
+      }
+    },
+
+    /* ---------------- 在线压缩 / 解压 ---------------- */
+
+    isZipFile(item) {
+      if (!item || item.type === "folder") return false;
+      const name = item.name || "";
+      return /\.zip$/i.test(name);
+    },
+
+    openCompressDialog(items) {
+      const list = Array.isArray(items) ? items.filter(Boolean) : [];
+      if (!list.length) return;
+      this.compressSources = list.map((item) => item.key);
+      const single = list.length === 1 ? list[0] : null;
+      const base = single
+        ? stripExtension(single.name || "归档")
+        : "归档";
+      this.compressName = base || "归档";
+      this.formError = "";
+      this.showContextMenu = false;
+      this.showCompressDialog = true;
+    },
+
+    closeCompressDialog() {
+      this.showCompressDialog = false;
+      this.compressSources = [];
+      this.compressName = "";
+      this.formError = "";
+    },
+
+    async confirmCompress() {
+      const name = (this.compressName || "").trim().replace(/\.zip$/i, "");
+      if (!name) {
+        this.formError = "请输入压缩包名称";
+        return;
+      }
+      if (name.includes("/")) {
+        this.formError = "名称不能包含 /";
+        return;
+      }
+      const sources = this.compressSources.slice();
+      if (!sources.length) return;
+      const targetKey = joinKey(this.cwd, `${name}.zip`);
+      this.showCompressDialog = false;
+      this.showNotice(`正在压缩 ${sources.length} 项...`, "info");
+      try {
+        const result = await createArchive(targetKey, sources);
+        this.showNotice(`已生成 ${result.key}（${formatSize(result.size || 0)}）`, "success");
+        await this.fetchFiles();
+      } catch (error) {
+        this.showNotice(`压缩失败：${errorMessage(error)}`, "error");
+      }
+    },
+
+    async extractItem(item) {
+      if (!item || item.type === "folder") return;
+      if (
+        !window.confirm(
+          `确定把「${item.name}」解压到当前目录吗？将创建 ${stripExtension(item.name)}/ 文件夹。`
+        )
+      ) {
+        return;
+      }
+      const base = stripExtension(item.name || "解压") || "解压";
+      const targetDir = joinKey(this.cwd, base);
+      this.showNotice(`正在解压「${item.name}」...`, "info");
+      try {
+        const result = await extractArchive(item.key, targetDir);
+        const failed = Array.isArray(result.errors) ? result.errors.length : 0;
+        if (failed) {
+          this.showNotice(`解压完成但有 ${failed} 项失败：${result.errors[0]}`, "error");
+        } else {
+          this.showNotice(`解压完成，共 ${result.files || 0} 个文件`, "success");
+        }
+        await this.fetchFiles();
+      } catch (error) {
+        this.showNotice(`解压失败：${errorMessage(error)}`, "error");
       }
     },
 

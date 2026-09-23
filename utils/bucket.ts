@@ -147,8 +147,12 @@ export function jsonResponse(data: unknown, status = 200): Response {
 export function serverError(error: unknown): Response {
   const message = error instanceof Error ? error.message : String(error);
   console.error("[flaredrive]", error);
+  const status =
+    error && typeof error === "object" && typeof (error as any).status === "number"
+      ? (error as any).status
+      : 500;
   return new Response(message, {
-    status: 500,
+    status,
     headers: { "Content-Type": "text/plain; charset=utf-8" },
   });
 }

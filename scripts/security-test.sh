@@ -258,6 +258,20 @@ check "?pt 对非 /raw 接口无效 401" 401 "$(code "$BASE/api/list/_sec?pt=$PT
 check "?pt 对 webdav 无效 401" 401 "$(code "$BASE/webdav/_sec/a.txt?pt=$PT")"
 check "清理越权测试残留 404" 404 "$(acode "$BASE/raw/_sec/evil.txt")"
 
+section "8.11 全局搜索：私有模式与越权"
+# 自建数据，别依赖外部残留；关键词独特，避免与历史数据撞车
+check "写入管理员搜索数据 201" 201 "$(acode -X PUT --data 'x' "$W/secprobe-admin.txt")"
+check "受限账号写自己的搜索数据 201" 201 "$(u1code -X PUT --data 'x' "$BASE/webdav/user1/secprobe-user1.txt")"
+check "匿名搜索 401" 401 "$(code "$BASE/api/search?q=secprobe")"
+check "受限账号搜索 200" 200 "$(u1code "$BASE/api/search?q=secprobe")"
+check "受限账号只搜到自己范围内的" 1 "$(curl -s -u "$USER1" "$BASE/api/search?q=secprobe" | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")"
+check "受限账号搜不到别人的文件" 0 "$(curl -s -u "$USER1" "$BASE/api/search?q=secprobe-admin" | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")"
+check "管理员能搜到自己的" 1 "$(curl -s -u "$ADMIN" "$BASE/api/search?q=secprobe-admin" | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")"
+acode -X DELETE "$W/secprobe-admin.txt" > /dev/null
+check "回收站内容不出现在搜索里" 0 "$(curl -s -u "$ADMIN" "$BASE/api/search?q=secprobe-admin" | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")"
+check "内部目录不出现在搜索里" 0 "$(curl -s -u "$ADMIN" "$BASE/api/search?q=thumbnails" | python3 -c "import json,sys; print(json.load(sys.stdin)['total'])")"
+check "清理受限账号搜索数据 204" 204 "$(u1code -X DELETE "$BASE/webdav/user1/secprobe-user1.txt")"
+
 section "9. 清理"
 check "删除测试目录" 204 "$(acode -X DELETE "$W")"
 check "删除兄弟目录" 204 "$(acode -X DELETE "$WOTHER")"

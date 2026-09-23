@@ -2666,6 +2666,37 @@ export function normalizeShare(data) {
 }
 
 /**
+ * 全局搜索文件名（跨目录递归）。
+ * @param {string} keyword 关键词
+ * @param {{limit?: number, prefix?: string}} [options]
+ * @returns {Promise<{results: Array<object>, scanned: number, truncated: boolean}>}
+ */
+export async function searchFiles(keyword, options) {
+  const settings = options || {};
+  const query = String(keyword == null ? "" : keyword).trim();
+  if (!query) return { results: [], scanned: 0, truncated: false };
+  let url = `/api/search?q=${encodeURIComponent(query)}`;
+  const limit = Number(settings.limit);
+  if (Number.isFinite(limit) && limit > 0) url += `&limit=${Math.floor(limit)}`;
+  if (settings.prefix) url += `&prefix=${encodeURIComponent(normalizePath(settings.prefix))}`;
+
+  const data = await apiFetchJson(url, { cache: "no-store" });
+  const list = data && Array.isArray(data.results) ? data.results : [];
+  return {
+    scanned: Number(data && data.scanned) || 0,
+    truncated: Boolean(data && data.truncated),
+    results: list.map((item) => ({
+      key: normalizePath(item.key == null ? "" : item.key),
+      name: String(item.name || ""),
+      size: Number(item.size) || 0,
+      contentType: item.contentType ? String(item.contentType) : "",
+      uploaded: item.uploaded || null,
+      thumbnail: item.thumbnail ? String(item.thumbnail) : null,
+    })),
+  };
+}
+
+/**
  * 上传前的同名预检：`POST /api/exists`
  * @param {string[]} keys 要检查的目标路径
  * @returns {Promise<string[]>} 其中已经存在的那些

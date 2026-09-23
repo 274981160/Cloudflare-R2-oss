@@ -56,6 +56,34 @@
 
     <p v-if="loginHint" class="page-hint" v-text="loginHint"></p>
 
+    <!-- 搜索提示 / 全局搜索入口：默认只过滤当前目录（零请求），要跨目录才点按钮 -->
+    <div v-if="search.trim()" class="search-bar">
+      <template v-if="!isGlobalSearch">
+        <span class="search-bar-text">
+          当前目录匹配 <strong v-text="localMatchCount"></strong> 个
+        </span>
+        <button
+          type="button"
+          class="search-bar-button"
+          :disabled="globalSearching"
+          @click="runGlobalSearch"
+        >
+          <span v-text="globalSearching ? '搜索中…' : '搜索全部目录'" />
+        </button>
+      </template>
+      <template v-else>
+        <span class="search-bar-text">
+          全部目录找到 <strong v-text="globalResults.length"></strong> 个
+          <template v-if="globalScanned">（已扫描 <span v-text="globalScanned"></span> 个对象）</template>
+          <template v-if="globalTruncated">· 结果已截断</template>
+        </span>
+        <button type="button" class="search-bar-button" @click="exitGlobalSearch">
+          <span>返回当前目录</span>
+        </button>
+      </template>
+    </div>
+    <p v-if="globalError" class="page-hint error" v-text="globalError"></p>
+
     <ul class="file-list" @click="onBackgroundClick">
       <li v-if="cwd">
         <div class="file-item" tabindex="0" @click.stop="goUp" @contextmenu.prevent>
@@ -67,7 +95,7 @@
           </div>
         </div>
       </li>
-      <li v-for="folder in visibleFolders" :key="folder.key">
+      <li v-for="folder in displayedFolders" :key="folder.key">
         <div
           class="file-item"
           :class="{ selected: isSelected(folder.key) }"
@@ -110,7 +138,7 @@
           </button>
         </div>
       </li>
-      <li v-for="file in visibleFiles" :key="file.key">
+      <li v-for="file in displayedFiles" :key="file.key">
         <div
           class="file-item"
           :class="{ selected: isSelected(file.key) }"
@@ -138,6 +166,7 @@
           <div class="file-body">
             <div class="file-name" v-text="file.name"></div>
             <div class="file-attr">
+              <span v-if="isGlobalSearch" class="file-dir" v-text="`${dirname(file.key) || '根目录'} /`"></span>
               <span v-text="formatDate(file.uploaded)"></span>
               <span v-text="formatSize(file.size)"></span>
             </div>
@@ -368,6 +397,11 @@
           <li v-if="canWrite">
             <button @click="runAction(() => openCompressDialog([focusedItem]))"><span>压缩为 zip</span></button>
           </li>
+          <li v-if="isGlobalSearch">
+            <button @click="runAction(() => openContainingFolder(focusedItem))">
+              <span>打开所在目录</span>
+            </button>
+          </li>
           <li>
             <button @click="runAction(() => copyShareLink(focusedItem))"><span>复制分享链接</span></button>
           </li>
@@ -481,6 +515,7 @@ import {
   putThumbnailAs,
   rawUrl,
   removeKey,
+  searchFiles,
   setPreviewToken,
   setUnauthorizedHandler,
   stripExtension,
@@ -519,6 +554,13 @@ export default {
     loading: false,
     readError: "",
     search: "",
+    /** 搜索范围：local=只过滤当前目录（零请求）；global=后端跨目录搜索 */
+    searchScope: "local",
+    globalResults: [],
+    globalScanned: 0,
+    globalTruncated: false,
+    globalSearching: false,
+    globalError: "",
     order: "name",
     initialized: false,
     profile: {
@@ -640,7 +682,8 @@ export default {
 
     emptyText() {
       if (this.needLogin) return "请先登录后查看文件";
-      if (this.search) return "没有匹配的文件";
+      if (this.isGlobalSearch) return "全部目录里没有匹配的文件";
+      if (this.search) return "当前目录没有匹配的文件（可点上方「搜索全部目录」）";
       return "这个文件夹是空的";
     },
 
@@ -695,6 +738,25 @@ export default {
       return this.sortedFiles.filter((file) => file.name.toLowerCase().includes(keyword));
     },
 
+    /** 是否处于「全部目录搜索」结果视图 */
+    isGlobalSearch() {
+      return this.searchScope === "global" && this.search.trim() !== "";
+    },
+
+    /** 当前关键词下、当前目录里的匹配数（用于提示行） */
+    localMatchCount() {
+      return this.visibleFolders.length + this.visibleFiles.length;
+    },
+
+    /** 列表实际渲染的数据源：全局搜索时换成搜索结果 */
+    displayedFolders() {
+      return this.isGlobalSearch ? [] : this.visibleFolders;
+    },
+
+    displayedFiles() {
+      return this.isGlobalSearch ? this.globalResults : this.visibleFiles;
+    },
+
     selectedItems() {
       const all = this.folders.concat(this.files);
       return all.filter((item) => this.selectedKeys.includes(item.key));
@@ -734,6 +796,11 @@ export default {
   },
 
   watch: {
+    search() {
+      // 关键词一变就回到「当前目录过滤」，避免还显示上一轮的全局结果
+      if (this.searchScope === "global") this.exitGlobalSearch();
+    },
+
     // 列表内容或视图变化后，重新为新出现的行安排按需加载
     visibleFiles() {
       this.observeThumbnails();
@@ -1331,6 +1398,50 @@ export default {
       };
       this.editorForceText = true;
       this.showTextEditor = true;
+    },
+
+    /* ---------------- 全局搜索 ---------------- */
+
+    /**
+     * 跨目录搜索文件名。
+     * 刻意做成「点一下才搜」：每次请求在慢网络里要 1~2 秒，
+     * 输入时自动全局搜索会把体验拖垮，所以输入时只做当前目录的即时过滤。
+     */
+    async runGlobalSearch() {
+      const keyword = this.search.trim();
+      if (!keyword || this.globalSearching) return;
+      this.globalSearching = true;
+      this.globalError = "";
+      try {
+        const data = await searchFiles(keyword);
+        this.globalResults = data.results;
+        this.globalScanned = data.scanned;
+        this.globalTruncated = data.truncated;
+        this.searchScope = "global";
+        if (!data.results.length) this.showNotice(`全部目录里没有匹配「${keyword}」的文件`, "info");
+      } catch (error) {
+        this.globalError = `搜索失败：${errorMessage(error)}`;
+      } finally {
+        this.globalSearching = false;
+      }
+    },
+
+    exitGlobalSearch() {
+      this.searchScope = "local";
+      this.globalResults = [];
+      this.globalScanned = 0;
+      this.globalTruncated = false;
+      this.globalError = "";
+    },
+
+    /** 跳到某个搜索结果所在的目录并选中它 */
+    async openContainingFolder(item) {
+      if (!item) return;
+      const parent = dirname(item.key);
+      this.exitGlobalSearch();
+      this.search = "";
+      await this.navigate(parent || "");
+      this.selectedKeys = [item.key];
     },
 
     /** 回收站里恢复/删除后刷新列表 */
@@ -2288,6 +2399,7 @@ export default {
     },
 
     formatSize,
+    dirname,
     formatDate,
     rawUrl,
   },
@@ -2372,6 +2484,51 @@ export default {
 .crumb-separator {
   color: #bbb;
   padding: 0 2px;
+}
+
+/* 搜索提示行 / 全局搜索入口 */
+.search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 8px;
+  font-size: 0.82em;
+  color: dimgray;
+}
+
+.search-bar-text strong {
+  color: #222;
+}
+
+.search-bar-button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background-color: white;
+  color: #0b5fa5;
+}
+
+.search-bar-button:hover {
+  background-color: #eef4fb;
+}
+
+.search-bar-button:disabled {
+  opacity: 0.6;
+}
+
+/* 全局搜索结果里的「所在目录」 */
+.file-dir {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #0b5fa5;
+}
+
+.page-hint.error {
+  color: #b00020;
 }
 
 /* 手机上把可点目标做到 ≥32px：面包屑原来只有 ~20px 高，很难点中 */

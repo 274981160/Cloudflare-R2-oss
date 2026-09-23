@@ -410,6 +410,35 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
   不会新增），所以「给已有分享改成 7 天」或「改回永久」都会生效。
 - 到期后 `/s/{token}` 一律 404。
 
+## 4.25 `GET /api/search` — 全局搜索文件名
+
+```
+GET /api/search?q=关键词&prefix=&limit=200
+```
+
+```json
+{
+  "query": "report",
+  "prefix": "",
+  "scanned": 137,
+  "truncated": false,
+  "total": 3,
+  "results": [
+    { "key": "_s2/sub/report-final.txt", "name": "report-final.txt",
+      "size": 3, "contentType": "text/plain", "uploaded": "...", "thumbnail": null }
+  ]
+}
+```
+
+- **文件名子串**匹配（大小写不敏感），不搜文件内容。
+- 递归遍历，**按权限过滤**：受限账号搜不到自己没权限的路径；
+  内部保留目录与回收站内容永不出现。
+- `prefix` 可限定在某个子树里搜；`limit` 默认 200、上限 500。
+- 有扫描上限（50000 个对象）与条数上限，触顶时 `truncated: true`。
+- 私有模式下匿名调用返回 `401`（公开读模式允许匿名）。
+- 网页端刻意做成**点按钮才搜**：慢网络里每次请求 1~2 秒，
+  输入时自动全局搜索会把体验拖垮，所以输入只做当前目录的即时过滤。
+
 ### 预览 token（`/api/whoami` 下发，`/raw?pt=` 使用）
 
 登录后 `/api/whoami` 会多返回两个字段：

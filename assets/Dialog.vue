@@ -35,8 +35,12 @@ const emit = defineEmits(["update:modelValue"]);
 }
 
 .dialog-container {
-  background-color: white;
-  border-radius: 8px;
+  background-color: var(--fd-surface);
+  color: var(--fd-text);
+  border: 1px solid var(--fd-border);
+  border-radius: var(--fd-radius-lg);
+  box-shadow: var(--fd-shadow-2);
   overflow: hidden;
+  max-height: 92vh;
 }
 </style>

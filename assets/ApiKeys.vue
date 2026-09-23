@@ -566,7 +566,7 @@ export default {
 
 .apikeys-intro {
   margin: 0;
-  color: dimgray;
+  color: var(--fd-text-muted);
   font-size: 0.8em;
 }
 
@@ -574,8 +574,8 @@ export default {
   margin: 0;
   padding: 8px 10px;
   border-radius: 6px;
-  background-color: #fdecef;
-  color: #b00020;
+  background-color: var(--fd-danger-soft);
+  color: var(--fd-danger);
   font-size: 0.85em;
 }
 
@@ -585,7 +585,7 @@ export default {
   gap: 10px;
   align-items: flex-end;
   padding-bottom: 12px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--fd-border);
 }
 
 .apikeys-field {
@@ -601,7 +601,7 @@ export default {
 }
 
 .apikeys-label {
-  color: dimgray;
+  color: var(--fd-text-muted);
   font-size: 0.75em;
 }
 
@@ -623,7 +623,7 @@ export default {
 .apikeys-pick-button {
   padding: 6px 14px;
   border-radius: 6px;
-  background-color: rgb(243, 128, 32);
+  background-color: var(--fd-accent);
   color: white;
   font-size: 0.85em;
 }
@@ -636,7 +636,7 @@ export default {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: #444;
+  color: var(--fd-text-soft);
   font-size: 0.85em;
   cursor: pointer;
 }
@@ -650,7 +650,7 @@ export default {
   padding: 6px 8px;
   border: 1px dashed #ddd;
   border-radius: 6px;
-  background-color: #fafafa;
+  background-color: var(--fd-surface-2);
 }
 
 .apikeys-tag {
@@ -660,7 +660,7 @@ export default {
   padding: 3px 6px 3px 10px;
   border-radius: 999px;
   background-color: #e8f1fb;
-  color: #0b5fa5;
+  color: var(--fd-primary);
   font-size: 0.8em;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
@@ -668,8 +668,8 @@ export default {
 }
 
 .apikeys-tag.all {
-  background-color: #fff3d6;
-  color: #8a6d3b;
+  background-color: var(--fd-accent-soft);
+  color: var(--fd-accent-strong);
   padding: 3px 10px;
 }
 
@@ -693,13 +693,13 @@ export default {
 }
 
 .apikeys-tag-empty {
-  color: dimgray;
+  color: var(--fd-text-muted);
   font-size: 0.8em;
 }
 
 .apikeys-perm-hint {
   margin: 0;
-  color: #8a6d3b;
+  color: var(--fd-accent-strong);
   font-size: 0.8em;
 }
 
@@ -716,7 +716,7 @@ export default {
 .apikeys-primary-button {
   padding: 8px 18px;
   border-radius: 6px;
-  background-color: rgb(243, 128, 32);
+  background-color: var(--fd-accent);
   color: white;
   font-size: 0.9em;
 }
@@ -738,7 +738,7 @@ export default {
 
 .apikeys-created-warn {
   margin: 0 0 8px;
-  color: #8a6d3b;
+  color: var(--fd-accent-strong);
   font-size: 0.85em;
   font-weight: 600;
 }
@@ -755,7 +755,7 @@ export default {
   min-width: 0;
   padding: 8px 10px;
   border-radius: 6px;
-  background-color: white;
+  background-color: var(--fd-surface);
   border: 1px solid #e0cfa6;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
@@ -768,14 +768,14 @@ export default {
 .apikeys-copy-button {
   padding: 6px 14px;
   border-radius: 6px;
-  background-color: rgb(243, 128, 32);
+  background-color: var(--fd-accent);
   color: white;
   font-size: 0.85em;
 }
 
 .apikeys-copy-hint {
   margin: 8px 0 0;
-  color: #8a6d3b;
+  color: var(--fd-accent-strong);
   font-size: 0.8em;
 }
 
@@ -787,7 +787,7 @@ export default {
 
 .apikeys-curl-hint {
   margin: 0 0 6px;
-  color: #8a6d3b;
+  color: var(--fd-accent-strong);
   font-size: 0.8em;
 }
 
@@ -795,7 +795,7 @@ export default {
   margin: 0;
   padding: 8px 10px;
   border-radius: 6px;
-  background-color: white;
+  background-color: var(--fd-surface);
   border: 1px solid #e0cfa6;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
@@ -814,17 +814,17 @@ export default {
 
 .apikeys-message {
   margin: 0;
-  color: #1b7f3b;
+  color: var(--fd-success);
   font-size: 0.85em;
 }
 
 .apikeys-message.error {
-  color: #b00020;
+  color: var(--fd-danger);
 }
 
 .apikeys-state {
   padding: 12px 0;
-  color: dimgray;
+  color: var(--fd-text-muted);
   font-size: 0.85em;
   text-align: center;
 }
@@ -844,11 +844,11 @@ export default {
 .apikeys-table td {
   padding: 8px 10px;
   text-align: left;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--fd-border);
 }
 
 .apikeys-table th {
-  color: dimgray;
+  color: var(--fd-text-muted);
   font-weight: 600;
 }
 
@@ -860,14 +860,14 @@ export default {
 }
 
 .apikeys-revoke-button {
-  color: #b00020;
+  color: var(--fd-danger);
   padding: 4px 8px;
   border-radius: 6px;
   font-size: 1em;
 }
 
 .apikeys-revoke-button:hover {
-  background-color: #fdecef;
+  background-color: var(--fd-danger-soft);
 }
 
 .apikeys-revoke-button:disabled {
@@ -881,7 +881,7 @@ export default {
 }
 
 .apikeys-refresh-button {
-  color: #0b5fa5;
+  color: var(--fd-primary);
   padding: 8px;
   font-size: 0.9em;
 }
@@ -889,7 +889,7 @@ export default {
 .apikeys-close-button {
   padding: 8px 18px;
   border-radius: 6px;
-  background-color: rgb(243, 128, 32);
+  background-color: var(--fd-accent);
   color: white;
   font-size: 0.9em;
 }

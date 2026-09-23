@@ -149,7 +149,7 @@ export default {
   display: block;
   margin-bottom: 4px;
   font-size: 0.8em;
-  color: dimgray;
+  color: var(--fd-text-muted);
 }
 
 .login-input {
@@ -165,20 +165,20 @@ export default {
   align-items: center;
   gap: 6px;
   font-size: 0.85em;
-  color: #444;
+  color: var(--fd-text-soft);
   margin-bottom: 4px;
 }
 
 .login-error {
   margin: 8px 0 0;
-  color: #b00020;
+  color: var(--fd-danger);
   font-size: 0.8em;
   word-break: break-word;
 }
 
 .login-hint {
   margin: 8px 0 0;
-  color: dimgray;
+  color: var(--fd-text-muted);
   font-size: 0.75em;
 }
 
@@ -191,13 +191,13 @@ export default {
 }
 
 .login-text-button {
-  color: #0b5fa5;
+  color: var(--fd-primary);
   padding: 8px 8px;
   font-size: inherit;
 }
 
 .login-primary-button {
-  background-color: rgb(243, 128, 32);
+  background-color: var(--fd-accent);
   color: white;
   border-radius: 6px;
   padding: 8px 18px;

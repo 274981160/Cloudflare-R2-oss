@@ -24,16 +24,31 @@
         placeholder="搜索文件名"
       />
       <span v-if="!canWrite" class="readonly-badge" title="当前账号没有写权限">只读</span>
+      <button
+        class="circle icon-button"
+        :class="{ active: selectionMode }"
+        aria-label="多选"
+        title="多选（也可长按文件后选「多选」）"
+        @click="selectionMode ? exitSelectionMode() : enterSelectionMode()"
+      >
+        <svg viewBox="0 0 448 512" width="20" height="20" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"
+          />
+        </svg>
+      </button>
       <div class="menu-button">
-        <button class="circle" aria-label="菜单" @click="showMenu = true">
+        <button class="circle icon-button" aria-label="菜单" @click="showMenu = true">
           <svg
             xmlns="http://www.w3.org/2000/svg"
             viewBox="0 0 448 512"
-            width="24"
-            height="24"
-            style="display: block; margin: 4px"
+            width="22"
+            height="22"
+            aria-hidden="true"
           >
             <path
+              fill="currentColor"
               d="M120 256c0 30.9-25.1 56-56 56s-56-25.1-56-56s25.1-56 56-56s56 25.1 56 56zm160 0c0 30.9-25.1 56-56 56s-56-25.1-56-56s25.1-56 56-56s56 25.1 56 56zm104 56c-30.9 0-56-25.1-56-56s25.1-56 56-56s56 25.1 56 56s-25.1 56-56 56z"
             />
           </svg>
@@ -56,28 +71,52 @@
 
     <p v-if="loginHint" class="page-hint" v-text="loginHint"></p>
 
-    <ul class="file-list" @click="clearSelection">
-      <li v-if="cwd">
-        <div class="file-item" tabindex="0" @click.stop="goUp" @contextmenu.prevent>
+    <ul
+      class="file-list"
+      :class="`view-${view}`"
+      role="listbox"
+      aria-label="文件列表"
+      :aria-multiselectable="true"
+      tabindex="0"
+      @click="onBackgroundClick"
+      @keydown="onListKeydown"
+    >
+      <li v-if="cwd" role="presentation">
+        <div class="file-item" @click.stop="goUp" @contextmenu.prevent>
           <div class="file-icon">
-            <img :src="folderIcon" width="36" height="36" alt="上级目录" />
+            <FolderIcon :size="iconSize" />
           </div>
           <div class="file-body">
             <div class="file-name">..</div>
+            <div class="file-attr"><span>返回上一级</span></div>
           </div>
         </div>
       </li>
-      <li v-for="folder in visibleFolders" :key="folder.key">
+      <li v-for="(folder, index) in visibleFolders" :key="folder.key" role="presentation">
         <div
           class="file-item"
-          :class="{ selected: isSelected(folder.key) }"
-          tabindex="0"
-          @click.stop="toggleSelect(folder)"
+          role="option"
+          :aria-selected="isSelected(folder.key)"
+          :aria-label="`文件夹 ${folder.name}`"
+          :class="{ selected: isSelected(folder.key), focused: isFocused(folder) }"
+          @pointerdown="onItemPointerDown($event, folder, index)"
+          @pointerup="cancelLongPress"
+          @pointercancel="cancelLongPress"
+          @pointerleave="cancelLongPress"
+          @click.stop="onItemActivate(folder, $event)"
           @dblclick.stop="openItem(folder)"
           @contextmenu.prevent="openContextMenu(folder)"
         >
+          <span v-if="showCheckboxes" class="file-check" aria-hidden="true">
+            <svg viewBox="0 0 448 512" width="12" height="12">
+              <path
+                fill="currentColor"
+                d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"
+              />
+            </svg>
+          </span>
           <div class="file-icon">
-            <img :src="folderIcon" width="36" height="36" alt="文件夹" />
+            <FolderIcon :size="iconSize" />
           </div>
           <div class="file-body">
             <div class="file-name" v-text="folder.name"></div>
@@ -96,21 +135,39 @@
           </button>
         </div>
       </li>
-      <li v-for="file in visibleFiles" :key="file.key">
+      <li v-for="(file, index) in visibleFiles" :key="file.key" role="presentation">
         <div
           class="file-item"
-          :class="{ selected: isSelected(file.key) }"
-          tabindex="0"
-          @click.stop="toggleSelect(file)"
+          role="option"
+          :aria-selected="isSelected(file.key)"
+          :aria-label="`文件 ${file.name}`"
+          :class="{ selected: isSelected(file.key), focused: isFocused(file) }"
+          @pointerdown="onItemPointerDown($event, file, visibleFolders.length + index)"
+          @pointerup="cancelLongPress"
+          @pointercancel="cancelLongPress"
+          @pointerleave="cancelLongPress"
+          @click.stop="onItemActivate(file, $event)"
           @dblclick.stop="openItem(file)"
           @contextmenu.prevent="openContextMenu(file)"
         >
-          <MimeIcon :content-type="file.contentType" :thumbnail="thumbnailSrc(file)" />
+          <span v-if="showCheckboxes" class="file-check" aria-hidden="true">
+            <svg viewBox="0 0 448 512" width="12" height="12">
+              <path
+                fill="currentColor"
+                d="M438.6 105.4c12.5 12.5 12.5 32.8 0 45.3l-256 256c-12.5 12.5-32.8 12.5-45.3 0l-128-128c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0L160 338.7 393.4 105.4c12.5-12.5 32.8-12.5 45.3 0z"
+              />
+            </svg>
+          </span>
+          <MimeIcon
+            :content-type="file.contentType"
+            :thumbnail="thumbnailSrc(file)"
+            :size="iconSize"
+          />
           <div class="file-body">
             <div class="file-name" v-text="file.name"></div>
             <div class="file-attr">
-              <span v-text="formatDate(file.uploaded)"></span>
-              <span v-text="formatSize(file.size)"></span>
+              <span class="file-date" v-text="formatDate(file.uploaded)"></span>
+              <span class="file-size" v-text="formatSize(file.size)"></span>
             </div>
           </div>
           <button class="file-more" aria-label="更多操作" @click.stop="openContextMenu(file)">
@@ -126,24 +183,41 @@
     </ul>
 
     <div v-if="loading" class="page-state">
+      <span class="page-spinner" aria-hidden="true"></span>
       <span>加载中...</span>
     </div>
     <div v-else-if="readError" class="page-state error">
       <span v-text="readError"></span>
       <button class="text-button" @click="reload">重试</button>
     </div>
-    <div v-else-if="!visibleFiles.length && !visibleFolders.length" class="page-state">
+    <div v-else-if="!visibleFiles.length && !visibleFolders.length" class="page-state empty">
+      <svg viewBox="0 0 512 512" width="56" height="56" aria-hidden="true">
+        <path
+          fill="currentColor"
+          d="M512 416c0 35.3-28.7 64-64 64H64c-35.3 0-64-28.7-64-64V96C0 60.7 28.7 32 64 32H181.5c17 0 33.3 6.7 45.3 18.7l26.5 26.5c12 12 28.3 18.7 45.3 18.7H448c35.3 0 64 28.7 64 64V416z"
+        />
+      </svg>
       <span v-text="emptyText"></span>
+      <button v-if="canWrite && !search" class="primary-button" @click="showUploadPopup = true">
+        上传文件
+      </button>
     </div>
 
-    <div v-if="selectedItems.length" class="selection-toolbar">
+    <div v-if="selectedItems.length || selectionMode" class="selection-toolbar">
       <span class="selection-count" v-text="`已选 ${selectedItems.length} 项`"></span>
-      <button @click="downloadSelected">下载</button>
-      <button v-if="canWrite" @click="openCompressDialog(selectedItems)">压缩为zip</button>
-      <button v-if="canWrite" @click="moveSelected">移动</button>
-      <button v-if="canWrite" @click="copySelected">复制</button>
-      <button v-if="canWrite" class="danger" @click="removeSelected">删除</button>
-      <button @click="clearSelection">取消选择</button>
+      <button @click="toggleSelectAll">
+        <span v-text="allSelected ? '取消全选' : '全选'"></span>
+      </button>
+      <button v-if="selectedItems.length" @click="downloadSelected">下载</button>
+      <button v-if="canWrite && selectedItems.length" @click="openCompressDialog(selectedItems)">
+        压缩为zip
+      </button>
+      <button v-if="canWrite && selectedItems.length" @click="moveSelected">移动</button>
+      <button v-if="canWrite && selectedItems.length" @click="copySelected">复制</button>
+      <button v-if="canWrite && selectedItems.length" class="danger" @click="removeSelected">
+        删除
+      </button>
+      <button @click="exitSelectionMode">完成</button>
     </div>
 
     <button
@@ -152,14 +226,23 @@
       aria-label="上传"
       @click="showUploadPopup = true"
     >
-      <img
-        style="filter: invert(100%)"
-        src="https://cdnjs.cloudflare.com/ajax/libs/material-design-icons/4.0.0/png/file/upload_file/materialicons/36dp/2x/baseline_upload_file_black_36dp.png"
-        alt="上传"
-        width="36"
-        height="36"
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 24 24"
+        width="26"
+        height="26"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
         @contextmenu.prevent
-      />
+      >
+        <path d="M12 16V4" />
+        <path d="M7.5 8.5 12 4l4.5 4.5" />
+        <path d="M4.5 15v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3" />
+      </svg>
     </button>
 
     <UploadPopup
@@ -232,6 +315,9 @@
             <button @click="runAction(() => openItem(focusedItem))"><span>打开</span></button>
           </li>
           <li>
+            <button @click="runAction(() => enterSelectionMode(focusedItem))"><span>多选</span></button>
+          </li>
+          <li>
             <button @click="runAction(() => downloadItem(focusedItem))">
               <span>下载 (zip)</span>
             </button>
@@ -260,6 +346,9 @@
         <ul v-else-if="focusedItem" class="contextmenu-list">
           <li>
             <button @click="runAction(() => preview(focusedItem))"><span>预览</span></button>
+          </li>
+          <li>
+            <button @click="runAction(() => enterSelectionMode(focusedItem))"><span>多选</span></button>
           </li>
           <li v-if="isTextItem(focusedItem)">
             <button @click="runAction(() => openEditor(focusedItem))"><span>编辑</span></button>
@@ -347,6 +436,7 @@ import FolderPicker from "./FolderPicker.vue";
 import TextEditor from "./TextEditor.vue";
 import ApiKeys from "./ApiKeys.vue";
 import Shares from "./Shares.vue";
+import FolderIcon from "./FolderIcon.vue";
 import PreviewOverlay from "./PreviewOverlay.vue";
 import {
   ApiError,
@@ -368,11 +458,13 @@ import {
   isTextFile,
   joinKey,
   listDirectory,
+  loadPreference,
   loadThumbnail,
   moveKey,
   normalizePath,
   rawUrl,
   removeKey,
+  savePreference,
   setUnauthorizedHandler,
   stripExtension,
   thumbnailDigest,
@@ -381,12 +473,10 @@ import {
   whoami as fetchWhoami,
 } from "/assets/main.mjs";
 
-const FOLDER_ICON =
-  "https://cdnjs.cloudflare.com/ajax/libs/material-design-icons/4.0.0/png/file/folder/materialicons/36dp/2x/baseline_folder_black_36dp.png";
-
 export default {
   components: {
     Dialog,
+    FolderIcon,
     Menu,
     MimeIcon,
     UploadPopup,
@@ -446,6 +536,23 @@ export default {
     moveTargets: [],
     clipboard: [],
     selectedKeys: [],
+    /**
+     * 多选模式：触屏下「单击=打开」，所以要有一个显式模式来多选
+     * （⋮ 菜单 / 长按菜单的「多选」进入，选完点「完成」退出）。
+     */
+    selectionMode: false,
+    /** 键盘导航当前聚焦项（对应 orderedItems 的下标，-1 表示无） */
+    focusedIndex: -1,
+    /** 视图：list（一行一项）/ grid（卡片网格） */
+    view: "list",
+    /**
+     * 单击是「打开」还是「选中」。
+     * 默认按设备推断：触屏（无 hover + 粗指针）= 打开，桌面 = 选中；
+     * 用户可在 ⋮ 菜单里改，改动会记住。
+     */
+    tapToOpen: false,
+    /** 主题：auto | light | dark */
+    theme: "auto",
     dragging: false,
     notice: "",
     noticeType: "info",
@@ -461,8 +568,6 @@ export default {
   }),
 
   computed: {
-    folderIcon: () => FOLDER_ICON,
-
     canWrite() {
       return this.profile.canWriteAny && this.dirCanWrite && !this.profile.readOnly;
     },
@@ -475,6 +580,26 @@ export default {
 
     compressSourceCount() {
       return Array.isArray(this.compressSources) ? this.compressSources.length : 0;
+    },
+
+    /** 列表里可见项的顺序（文件夹在前），用于键盘导航与范围选择 */
+    orderedItems() {
+      return this.visibleFolders.concat(this.visibleFiles);
+    },
+
+    /** 是否显示勾选圈：多选模式，或已有选中项 */
+    showCheckboxes() {
+      return this.selectionMode || this.selectedKeys.length > 0;
+    },
+
+    /** 图标尺寸随视图变化（网格视图用大图标/缩略图） */
+    iconSize() {
+      return this.view === "grid" ? 52 : 36;
+    },
+
+    allSelected() {
+      const items = this.orderedItems;
+      return items.length > 0 && items.every((item) => this.isSelected(item.key));
     },
 
     directDownload() {
@@ -568,7 +693,29 @@ export default {
     },
 
     menuItems() {
-      const items = [{ text: "名称A-Z" }, { text: "大小↑" }, { text: "大小↓" }];
+      const items = [];
+      // 排序
+      items.push({ text: "名称 A-Z", active: this.order === "name" });
+      items.push({ text: "大小 小→大", active: this.order === "size-asc" });
+      items.push({ text: "大小 大→小", active: this.order === "size-desc" });
+      items.push({ divider: true });
+      // 视图与交互习惯（都记在本机）
+      items.push({ text: "网格视图", active: this.view === "grid" });
+      items.push({ text: "列表视图", active: this.view === "list" });
+      items.push({
+        text: this.tapToOpen ? "单击：打开（当前）" : "单击：打开",
+        active: this.tapToOpen,
+      });
+      items.push({
+        text: this.tapToOpen ? "单击：选中" : "单击：选中（当前）",
+        active: !this.tapToOpen,
+      });
+      items.push({ divider: true });
+      items.push({ text: "主题：跟随系统", active: this.theme === "auto" });
+      items.push({ text: "主题：浅色", active: this.theme === "light" });
+      items.push({ text: "主题：深色", active: this.theme === "dark" });
+      items.push({ divider: true });
+      items.push({ text: "多选", disabled: this.orderedItems.length === 0 });
       if (this.canWrite && this.clipboard.length) items.push({ text: "粘贴" });
       if (this.manageKeys) items.push({ text: "API 密钥" });
       // 分享是普通功能，任何已登录账号都能管理自己创建的分享
@@ -594,6 +741,7 @@ export default {
   },
 
   created() {
+    this.loadPreferences();
     this._onPopState = () => {
       const target = normalizePath(new URL(window.location).searchParams.get("p") || "");
       if (target !== this.cwd) this.cwd = target;
@@ -603,10 +751,23 @@ export default {
     this.init();
   },
 
+  mounted() {
+    // 捕获阶段吞掉「长按后补发的那次 click」，避免刚弹出的菜单被立刻关闭
+    this._onCaptureClick = (event) => {
+      if (this._suppressClickUntil && Date.now() < this._suppressClickUntil) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("click", this._onCaptureClick, true);
+  },
+
   beforeUnmount() {
     window.removeEventListener("popstate", this._onPopState);
+    document.removeEventListener("click", this._onCaptureClick, true);
     setUnauthorizedHandler(null);
     if (this._noticeTimer) clearTimeout(this._noticeTimer);
+    this.cancelLongPress();
   },
 
   methods: {
@@ -748,6 +909,244 @@ export default {
 
     clearSelection() {
       this.selectedKeys = [];
+    },
+
+    /* ---------------- 交互模型：单击/双击/长按/多选/键盘 ---------------- */
+
+    /**
+     * 单击（轻触）的语义，按设备习惯自适应：
+     * - 多选模式：勾选/取消勾选
+     * - 按住 Ctrl/Cmd：加选；按住 Shift：范围选择（桌面习惯）
+     * - tapToOpen（触屏默认）：直接打开文件夹 / 预览文件
+     * - 否则（桌面默认）：只选中，双击才打开
+     */
+    onItemActivate(item, event) {
+      if (!item) return;
+      // 长按已经弹出了操作菜单，紧随其后的 click 不应再「打开」
+      if (this._longPressFired) {
+        this._longPressFired = false;
+        return;
+      }
+      this.focusList();
+      if (this.selectionMode) {
+        this.toggleSelect(item);
+        return;
+      }
+      const modifier = !!(event && (event.ctrlKey || event.metaKey || event.shiftKey));
+      if (modifier) {
+        if (event.shiftKey) this.selectRange(item);
+        else this.toggleSelect(item);
+        return;
+      }
+      if (this.tapToOpen) {
+        this.openItem(item);
+        return;
+      }
+      this.selectedKeys = [item.key];
+      this.focusedIndex = this.orderedItems.findIndex((entry) => entry.key === item.key);
+    },
+
+    /** 让文件列表容器拿到焦点（键盘导航需要） */
+    focusList() {
+      this.$nextTick(() => {
+        const list = this.$el ? this.$el.querySelector(".file-list") : null;
+        if (list && typeof list.focus === "function") {
+          try {
+            list.focus({ preventScroll: true });
+          } catch (error) {
+            /* 忽略 */
+          }
+        }
+      });
+    },
+
+    /** 多选模式下点空白处：退出（清空并关闭多选） */
+    onBackgroundClick() {
+      if (this.selectedKeys.length) this.selectedKeys = [];
+      if (this.selectionMode) this.selectionMode = false;
+      this.focusedIndex = -1;
+    },
+
+    /** Shift+单击：从上次选中项到当前项整段选中 */
+    selectRange(item) {
+      const items = this.orderedItems;
+      const index = items.findIndex((entry) => entry.key === item.key);
+      if (index < 0) return;
+      const anchorKey = this.selectedKeys[this.selectedKeys.length - 1];
+      const anchor = anchorKey ? items.findIndex((entry) => entry.key === anchorKey) : -1;
+      if (anchor < 0) {
+        this.selectedKeys = [item.key];
+        return;
+      }
+      const [from, to] = anchor <= index ? [anchor, index] : [index, anchor];
+      const keys = items.slice(from, to + 1).map((entry) => entry.key);
+      this.selectedKeys = Array.from(new Set(this.selectedKeys.concat(keys)));
+      this.focusedIndex = index;
+    },
+
+    /** 进入多选模式（可选：顺带选中当前项） */
+    enterSelectionMode(item) {
+      this.selectionMode = true;
+      if (item && !this.isSelected(item.key)) this.toggleSelect(item);
+    },
+
+    exitSelectionMode() {
+      this.selectionMode = false;
+      this.selectedKeys = [];
+      this.focusedIndex = -1;
+    },
+
+    toggleSelectAll() {
+      if (this.allSelected) {
+        this.selectedKeys = [];
+        return;
+      }
+      this.selectedKeys = this.orderedItems.map((item) => item.key);
+    },
+
+    isFocused(item) {
+      if (this.focusedIndex < 0 || !item) return false;
+      const items = this.orderedItems;
+      return items[this.focusedIndex] ? items[this.focusedIndex].key === item.key : false;
+    },
+
+    /** 桌面键盘导航：方向键移动、回车打开、空格勾选、Esc 退出、Home/End 跳首尾 */
+    onListKeydown(event) {
+      if (!event) return;
+      const items = this.orderedItems;
+      if (!items.length) return;
+      const key = event.key;
+      const move = (delta) => {
+        event.preventDefault();
+        const current = this.focusedIndex;
+        const next = Math.min(
+          items.length - 1,
+          Math.max(0, current < 0 ? (delta > 0 ? 0 : items.length - 1) : current + delta)
+        );
+        this.focusedIndex = next;
+        const target = items[next];
+        if (target) this.selectedKeys = [target.key];
+        this.scrollItemIntoView(target);
+      };
+
+      if (key === "ArrowDown" || key === "ArrowRight") return move(1);
+      if (key === "ArrowUp" || key === "ArrowLeft") return move(-1);
+      if (key === "Home") return move(-items.length);
+      if (key === "End") return move(items.length);
+      if (key === "Enter") {
+        const target = items[this.focusedIndex];
+        if (target) {
+          event.preventDefault();
+          this.openItem(target);
+        }
+        return;
+      }
+      if (key === " " || key === "Spacebar") {
+        const target = items[this.focusedIndex];
+        if (target) {
+          event.preventDefault();
+          this.toggleSelect(target);
+        }
+        return;
+      }
+      if (key === "Escape") {
+        event.preventDefault();
+        if (this.selectionMode || this.selectedKeys.length) this.exitSelectionMode();
+        else this.search = "";
+        return;
+      }
+      if ((key === "a" || key === "A") && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        this.selectionMode = true;
+        this.selectedKeys = items.map((item) => item.key);
+      }
+    },
+
+    scrollItemIntoView(item) {
+      if (!item) return;
+      this.$nextTick(() => {
+        const nodes = this.$el ? this.$el.querySelectorAll(".file-item[role=option]") : [];
+        const index = this.orderedItems.findIndex((entry) => entry.key === item.key);
+        const node = nodes && nodes[index];
+        if (node && typeof node.scrollIntoView === "function") {
+          node.scrollIntoView({ block: "nearest" });
+        }
+      });
+    },
+
+    /* ---------------- 长按：触屏打开右键菜单 ---------------- */
+
+    /**
+     * 触屏长按（480ms）打开操作菜单；手指移动超过阈值或抬起则取消，
+     * 不影响滚动。iOS Safari 不派发 contextmenu，这里用计时器兜底。
+     */
+    onItemPointerDown(event, item, index) {
+      if (!event) return;
+      this._pointerType = event.pointerType || "mouse";
+      this._longPressFired = false;
+      if (index !== undefined && index >= 0) this.focusedIndex = index;
+      if (event.pointerType === "mouse") return;
+      this.cancelLongPress();
+      this._pressStart = { x: event.clientX, y: event.clientY };
+      this._longPressTimer = setTimeout(() => {
+        this._longPressTimer = 0;
+        this._longPressFired = true;
+        // 触摸结束后浏览器还会补发一次 click，不吞掉会立刻把刚弹出的菜单关掉
+        this._suppressClickUntil = Date.now() + 700;
+        this.openContextMenu(item);
+      }, 480);
+    },
+
+    cancelLongPress() {
+      if (this._longPressTimer) {
+        clearTimeout(this._longPressTimer);
+        this._longPressTimer = 0;
+      }
+      this._pressStart = null;
+    },
+
+    /* ---------------- 偏好设置（本地记住） ---------------- */
+
+    loadPreferences() {
+      // 触屏（无 hover + 粗指针）默认「单击打开」，桌面默认「单击选中」
+      const touchLike =
+        typeof window !== "undefined" && typeof window.matchMedia === "function"
+          ? window.matchMedia("(hover: none) and (pointer: coarse)").matches
+          : false;
+      this.tapToOpen = loadPreference("tapToOpen", touchLike) === true;
+      this.view = loadPreference("view", "list") === "grid" ? "grid" : "list";
+      const theme = loadPreference("theme", "auto");
+      this.theme = ["auto", "light", "dark"].includes(theme) ? theme : "auto";
+      const order = loadPreference("order", "name");
+      if (["name", "size-asc", "size-desc"].includes(order)) this.order = order;
+      this.applyTheme();
+    },
+
+    applyTheme() {
+      if (typeof document === "undefined") return;
+      document.documentElement.setAttribute("data-theme", this.theme);
+    },
+
+    setView(view) {
+      this.view = view === "grid" ? "grid" : "list";
+      savePreference("view", this.view);
+    },
+
+    setTapToOpen(value) {
+      const next = value !== false;
+      if (next === this.tapToOpen) return;
+      this.tapToOpen = next;
+      savePreference("tapToOpen", this.tapToOpen);
+      this.showNotice(
+        this.tapToOpen ? "已切换为：单击打开" : "已切换为：单击选中，双击打开",
+        "success"
+      );
+    },
+
+    setTheme(theme) {
+      this.theme = ["auto", "light", "dark"].includes(theme) ? theme : "auto";
+      savePreference("theme", this.theme);
+      this.applyTheme();
     },
 
     /* ---------------- 缩略图（带认证取回，见 main.mjs 的 loadThumbnail） ---------------- */
@@ -1542,14 +1941,43 @@ export default {
 
     onMenuClick(text) {
       switch (text) {
-        case "名称A-Z":
+        case "名称 A-Z":
           this.order = "name";
+          savePreference("order", this.order);
           break;
-        case "大小↑":
+        case "大小 小→大":
           this.order = "size-asc";
+          savePreference("order", this.order);
           break;
-        case "大小↓":
+        case "大小 大→小":
           this.order = "size-desc";
+          savePreference("order", this.order);
+          break;
+        case "网格视图":
+          this.setView("grid");
+          break;
+        case "列表视图":
+          this.setView("list");
+          break;
+        case "单击：打开":
+        case "单击：打开（当前）":
+          this.setTapToOpen(true);
+          break;
+        case "单击：选中":
+        case "单击：选中（当前）":
+          this.setTapToOpen(false);
+          break;
+        case "主题：跟随系统":
+          this.setTheme("auto");
+          break;
+        case "主题：浅色":
+          this.setTheme("light");
+          break;
+        case "主题：深色":
+          this.setTheme("dark");
+          break;
+        case "多选":
+          this.enterSelectionMode();
           break;
         case "粘贴":
           this.pasteFile();
@@ -1588,33 +2016,64 @@ export default {
 </script>
 
 <style>
+/* 说明：文件行、列表/网格视图、图标等基础样式在 assets/main.css；
+   这里只放应用外壳（工具栏、面包屑、提示、弹窗、选择条等）的样式。 */
+
 .main {
   height: 100%;
   padding-bottom: 96px;
 }
 
+/* ---------------- 顶部工具栏 ---------------- */
+
 .app-bar {
   position: sticky;
   top: 0;
-  padding: 8px;
-  background-color: white;
+  z-index: 10;
   display: flex;
   align-items: center;
-  z-index: 10;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: var(--fd-surface);
+  border-bottom: 1px solid var(--fd-border);
+}
+
+@supports (backdrop-filter: blur(12px)) {
+  .app-bar {
+    background-color: color-mix(in srgb, var(--fd-surface) 86%, transparent);
+    backdrop-filter: saturate(180%) blur(12px);
+  }
+}
+
+.app-bar input[type="search"] {
+  flex: 1;
+}
+
+.icon-button {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--fd-text-soft);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.icon-button:hover {
+  background-color: var(--fd-surface-2);
+  color: var(--fd-text);
+}
+
+.icon-button.active {
+  background-color: var(--fd-primary-soft);
+  color: var(--fd-primary);
 }
 
 .menu-button {
   display: flex;
   position: relative;
-  margin-left: 4px;
-}
-
-.menu-button > button {
-  transition: background-color 0.2s ease;
-}
-
-.menu-button > button:hover {
-  background-color: whitesmoke;
 }
 
 .menu {
@@ -1625,100 +2084,131 @@ export default {
 
 .readonly-badge {
   flex-shrink: 0;
-  margin-left: 8px;
-  padding: 2px 8px;
-  border-radius: 10px;
-  background-color: #eee;
-  color: dimgray;
-  font-size: 0.75em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background-color: var(--fd-surface-3);
+  color: var(--fd-text-muted);
+  font-size: 0.72em;
   white-space: nowrap;
 }
+
+/* ---------------- 面包屑 ---------------- */
 
 .breadcrumb {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  padding: 0 12px 8px;
+  gap: 2px;
+  padding: 6px 12px;
   font-size: 0.85em;
-  color: #444;
+  color: var(--fd-text-soft);
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+  background-color: var(--fd-bg);
+}
+
+.breadcrumb::-webkit-scrollbar {
+  display: none;
 }
 
 .crumb {
-  color: #0b5fa5;
-  padding: 2px 4px;
-  border-radius: 4px;
-  max-width: 180px;
+  color: var(--fd-primary);
+  padding: 3px 7px;
+  border-radius: 999px;
+  max-width: 46vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition: background-color 0.15s ease;
 }
 
 .crumb:hover {
-  background-color: whitesmoke;
+  background-color: var(--fd-surface-2);
 }
 
 .crumb.current {
-  color: #222;
+  color: var(--fd-text);
   font-weight: 600;
+  background-color: var(--fd-surface-3);
 }
 
 .crumb-separator {
-  color: #bbb;
-  padding: 0 2px;
+  color: var(--fd-border-strong);
+  padding: 0 1px;
 }
 
 .page-hint {
   margin: 0 12px 8px;
-  padding: 6px 10px;
-  border-radius: 6px;
-  background-color: #fff8e6;
-  color: #8a6d3b;
-  font-size: 0.85em;
+  padding: 8px 12px;
+  border-radius: var(--fd-radius-sm);
+  background-color: var(--fd-accent-soft);
+  color: var(--fd-accent-strong);
+  font-size: 0.82em;
 }
 
-.file-body {
-  flex: 1;
-}
-
-.file-more {
-  flex-shrink: 0;
-  color: #888;
-  padding: 4px;
-  margin-right: 8px;
-}
-
-.file-more svg {
-  width: 24px;
-  height: 24px;
-  display: block;
-}
-
-.file-item.selected {
-  background-color: #e8f1fb;
-}
+/* ---------------- 页面状态（加载/错误/空） ---------------- */
 
 .page-state {
-  margin-top: 12px;
+  margin: 36px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   text-align: center;
-  color: dimgray;
+  color: var(--fd-text-muted);
 }
 
 .page-state.error {
-  color: #b00020;
+  color: var(--fd-danger);
 }
 
+.page-state.empty svg {
+  color: var(--fd-border-strong);
+}
+
+.page-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--fd-border);
+  border-top-color: var(--fd-primary);
+  border-radius: 50%;
+  animation: fd-spin 0.8s linear infinite;
+}
+
+@keyframes fd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-spinner {
+    animation-duration: 2s;
+  }
+}
+
+/* ---------------- 按钮 ---------------- */
+
 .text-button {
-  color: #0b5fa5;
-  padding: 4px 8px;
+  color: var(--fd-primary);
+  padding: 6px 10px;
+  border-radius: var(--fd-radius-sm);
   font-size: inherit;
+  transition: background-color 0.15s ease;
+}
+
+.text-button:hover {
+  background-color: var(--fd-primary-soft);
 }
 
 .primary-button {
-  background-color: rgb(243, 128, 32);
-  color: white;
-  border-radius: 6px;
-  padding: 8px 16px;
+  background-color: var(--fd-accent);
+  color: #fff;
+  border-radius: var(--fd-radius-sm);
+  padding: 9px 18px;
   font-size: inherit;
+  box-shadow: var(--fd-shadow-1);
+  transition: filter 0.15s ease;
 }
 
 .primary-button:hover {
@@ -1726,35 +2216,39 @@ export default {
 }
 
 .danger {
-  color: #b00020;
+  color: var(--fd-danger);
 }
+
+/* ---------------- 底部选择工具条 ---------------- */
 
 .selection-toolbar {
   position: fixed;
   left: 12px;
   right: 76px;
-  bottom: 16px;
+  bottom: 20px;
   z-index: 20;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  padding: 6px 10px;
-  border-radius: 12px;
-  background-color: rgba(32, 32, 32, 0.92);
-  color: white;
-  box-shadow: 2px 4px 6px rgba(0, 0, 0, 0.3);
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--fd-radius-lg);
+  background-color: rgba(28, 30, 34, 0.94);
+  color: #fff;
+  box-shadow: var(--fd-shadow-2);
+  backdrop-filter: blur(8px);
 }
 
 .selection-toolbar button {
-  color: white;
-  padding: 6px 8px;
-  border-radius: 6px;
-  font-size: 0.85em;
+  color: inherit;
+  padding: 7px 10px;
+  border-radius: var(--fd-radius-sm);
+  font-size: 0.82em;
+  transition: background-color 0.15s ease;
 }
 
 .selection-toolbar button:hover {
-  background-color: rgba(255, 255, 255, 0.15);
+  background-color: rgba(255, 255, 255, 0.16);
 }
 
 .selection-toolbar .danger {
@@ -1762,27 +2256,44 @@ export default {
 }
 
 .selection-count {
-  font-size: 0.8em;
-  color: #ddd;
-  margin-right: 4px;
+  font-size: 0.78em;
+  color: #d6d8dd;
+  margin-right: 6px;
+  white-space: nowrap;
 }
+
+@media only screen and (max-width: 480px) {
+  .selection-toolbar {
+    left: 8px;
+    right: 70px;
+    gap: 0;
+  }
+
+  .selection-toolbar button {
+    padding: 7px 8px;
+    font-size: 0.78em;
+  }
+}
+
+/* ---------------- 上传状态与拖放提示 ---------------- */
 
 .upload-status {
   position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  left: 12px;
+  bottom: 12px;
   z-index: 30;
   display: flex;
-  justify-content: space-between;
   gap: 8px;
-  padding: 4px 10px;
-  background-color: rgba(32, 32, 32, 0.86);
-  color: white;
-  font-size: 0.8em;
+  padding: 8px 12px;
+  border-radius: var(--fd-radius);
+  background-color: rgba(28, 30, 34, 0.92);
+  color: #fff;
+  font-size: 0.82em;
+  box-shadow: var(--fd-shadow-2);
 }
 
 .upload-status-text {
+  max-width: 60vw;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1792,99 +2303,117 @@ export default {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background-color: rgba(243, 128, 32, 0.12);
-  border: 3px dashed rgb(243, 128, 32);
   display: flex;
   align-items: center;
   justify-content: center;
-  pointer-events: none;
+  background-color: rgba(11, 95, 165, 0.18);
+  border: 2px dashed var(--fd-primary);
 }
 
 .drop-hint {
-  background-color: white;
-  padding: 12px 20px;
-  border-radius: 10px;
-  box-shadow: 2px 4px 8px rgba(0, 0, 0, 0.2);
+  padding: 14px 20px;
+  border-radius: var(--fd-radius);
+  background-color: var(--fd-surface);
+  color: var(--fd-text);
+  font-size: 0.9em;
+  box-shadow: var(--fd-shadow-2);
 }
+
+/* ---------------- 轻提示 ---------------- */
 
 .notice {
   position: fixed;
   left: 50%;
+  bottom: 96px;
   transform: translateX(-50%);
-  bottom: 72px;
   z-index: 50;
-  max-width: min(560px, 90vw);
-  padding: 8px 14px;
-  border-radius: 8px;
-  color: white;
-  background-color: rgba(32, 32, 32, 0.9);
+  max-width: min(560px, 88vw);
+  padding: 10px 16px;
+  border-radius: 999px;
+  background-color: rgba(28, 30, 34, 0.94);
+  color: #fff;
   font-size: 0.85em;
-  box-shadow: 2px 4px 8px rgba(0, 0, 0, 0.25);
+  text-align: center;
   word-break: break-word;
+  box-shadow: var(--fd-shadow-2);
 }
 
 .notice.error {
-  background-color: #b00020;
+  background-color: #b3261e;
 }
 
 .notice.success {
   background-color: #1b7f3b;
 }
 
+/* ---------------- 表单弹窗 ---------------- */
+
 .form-dialog {
-  padding: 16px;
-  min-width: min(320px, 80vw);
+  padding: 18px;
+  min-width: min(360px, 86vw);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: var(--fd-surface);
+  color: var(--fd-text);
+  border-radius: var(--fd-radius-lg);
 }
 
 .dialog-title {
-  margin: 0 0 12px;
-  font-size: 1em;
+  margin: 0;
+  font-size: 1.05em;
 }
 
 .form-input {
   width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  font-size: inherit;
+  padding: 10px 12px;
+  border: 1px solid var(--fd-border-strong);
+  border-radius: var(--fd-radius-sm);
+  background-color: var(--fd-surface);
+  color: var(--fd-text);
+  font: inherit;
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--fd-primary);
+  box-shadow: 0 0 0 3px var(--fd-primary-soft);
 }
 
 .form-hint {
-  margin: 8px 0 0;
-  color: dimgray;
+  margin: 0;
+  color: var(--fd-text-muted);
   font-size: 0.8em;
 }
 
 .form-error {
-  margin: 8px 0 0;
-  color: #b00020;
-  font-size: 0.8em;
+  margin: 0;
+  color: var(--fd-danger);
+  font-size: 0.82em;
 }
 
 .form-actions {
-  margin-top: 16px;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  margin-top: 4px;
 }
 
+/* ---------------- 右键 / 长按菜单 ---------------- */
+
 .contextmenu {
-  min-width: 200px;
+  min-width: min(280px, 86vw);
+  padding: 6px;
+  background-color: var(--fd-surface);
+  color: var(--fd-text);
+  border-radius: var(--fd-radius);
+  box-shadow: var(--fd-shadow-2);
 }
 
 .contextmenu-filename {
-  border-bottom: 1px solid #eee;
-}
-
-@media only screen and (max-width: 768px) {
-  .selection-toolbar {
-    left: 8px;
-    right: 8px;
-    bottom: 72px;
-  }
-
-  .notice {
-    bottom: 132px;
-  }
+  padding: 10px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--fd-border);
+  margin-bottom: 4px;
 }
 </style>

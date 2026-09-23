@@ -123,6 +123,8 @@ const canPickDirectory = supportsDirectoryUpload();
   z-index: 2;
   border-radius: 16px 16px 0 0;
   background-color: white;
+  /* 右下角有上传悬浮按钮，底部留出空间免得压住提示文字 */
+  padding-bottom: 84px;
 }
 
 .popup .button-grid {

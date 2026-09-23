@@ -1740,6 +1740,20 @@ export default {  props: {
 }
 
 @media only screen and (max-width: 768px) {
+  /* 手机上工具条按钮原来只有 21~31px 高，点起来很费劲 */
+  .editor-dialog .editor-tool,
+  .editor-dialog .editor-lang,
+  .editor-dialog button,
+  .editor-dialog input,
+  .editor-dialog select {
+    min-height: 34px;
+    padding: 6px 9px;
+  }
+
+  .editor-dialog .editor-toolbar {
+    gap: 6px;
+  }
+
   .editor-mask {
     padding: 0;
   }

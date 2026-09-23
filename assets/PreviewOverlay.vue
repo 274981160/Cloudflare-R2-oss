@@ -134,7 +134,8 @@
 
         <p v-if="kind === 'image'" class="preview-hint">
           <template v-if="total > 1">左右滑动（或按 ← →）切换同目录图片；</template>
-          双击图片或滚动滚轮可以放大 / 还原。
+          <span class="hint-pointer">双击图片或滚动滚轮可以放大 / 还原。</span>
+          <span class="hint-touch">双击图片可以放大 / 还原。</span>
         </p>
       </div>
     </div>
@@ -832,6 +833,31 @@ export default {
   background-color: rgb(243, 128, 32);
   color: white;
   font-size: 0.9em;
+}
+
+.hint-touch {
+  display: none;
+}
+
+/* 触摸设备没有滚轮，别提示滚轮 */
+@media (hover: none) {
+  .hint-pointer {
+    display: none;
+  }
+
+  .hint-touch {
+    display: inline;
+  }
+}
+
+/* 触摸设备：按钮做大到 ≥36px（原来只有 31px 高，不好点） */
+@media (hover: none) {
+  .preview-dialog .preview-button,
+  .preview-dialog .preview-primary,
+  .preview-dialog button {
+    min-height: 36px;
+    padding: 6px 10px;
+  }
 }
 
 .preview-hint {

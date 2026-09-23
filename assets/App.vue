@@ -2374,6 +2374,22 @@ export default {
   padding: 0 2px;
 }
 
+/* 手机上把可点目标做到 ≥32px：面包屑原来只有 ~20px 高，很难点中 */
+@media only screen and (max-width: 768px) {
+  .breadcrumb {
+    padding: 0 10px 10px;
+  }
+
+  .crumb {
+    padding: 9px 6px;
+    max-width: 45vw;
+  }
+
+  .crumb-separator {
+    padding: 0 1px;
+  }
+}
+
 .page-hint {
   margin: 0 12px 8px;
   padding: 6px 10px;

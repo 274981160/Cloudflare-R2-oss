@@ -484,4 +484,16 @@ export default {
     height: 200px;
   }
 }
+
+/* 触摸设备：面包屑原来只有 ~20px 高，很难点中 */
+@media only screen and (max-width: 768px) {
+  .fp-crumb {
+    padding: 9px 6px;
+    max-width: 45vw;
+  }
+
+  .fp-breadcrumb {
+    padding: 4px 8px 8px;
+  }
+}
 </style>

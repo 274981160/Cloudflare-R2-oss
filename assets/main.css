@@ -55,6 +55,14 @@ input[type="search"] {
   padding: 8px 12px;
 }
 
+/* 手机上搜索框略高一点更好点 */
+@media only screen and (max-width: 768px) {
+  input[type="search"] {
+    min-height: 40px;
+    padding: 10px 12px;
+  }
+}
+
 .file-item {
   height: 64px;
   padding: 8px 4px;

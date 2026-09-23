@@ -171,7 +171,11 @@
             </thead>
             <tbody>
               <tr v-for="item in keys" :key="item.id">
-                <td v-text="item.name || '（未命名）'"></td>
+                <td class="apikeys-name">
+                  <span v-text="item.name || '（未命名）'"></span>
+                  <!-- 窄屏下其余列会隐藏，这里补一行等价信息 -->
+                  <span class="apikeys-meta" v-text="mobileMeta(item)"></span>
+                </td>
                 <td><code class="apikeys-hint" v-text="item.hint || '—'"></code></td>
                 <td v-text="formatPermissions(item.permissions)"></td>
                 <td v-text="formatDate(item.createdAt) || '—'"></td>
@@ -544,6 +548,29 @@ export default {
     },
 
     formatDate,
+
+    /** 紧凑日期：2026-09-24（窄屏放得下） */
+    shortDate(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      const pad = (number) => String(number).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    },
+
+    /** 窄屏下补在备注名下方的一行：密钥提示 / 权限 / 创建 / 最后使用 / 过期 */
+    mobileMeta(item) {
+      if (!item) return "";
+      const parts = [];
+      if (item.hint) parts.push(`密钥 ${item.hint}`);
+      parts.push(this.formatPermissions(item.permissions) || "全部目录");
+      if (item.createdAt) parts.push(`创建 ${this.shortDate(item.createdAt)}`);
+      parts.push(
+        item.lastUsedAt ? `最后使用 ${this.shortDate(item.lastUsedAt)}` : "从未使用"
+      );
+      parts.push(item.expiresAt ? `到期 ${this.shortDate(item.expiresAt)}` : "永不过期");
+      return parts.join(" · ");
+    },
   },
 };
 </script>
@@ -835,9 +862,42 @@ export default {
 
 .apikeys-table {
   width: 100%;
+  /* 固定布局：长内容只在单元格内折行，不会把表格撑到屏幕外 */
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.8em;
-  white-space: nowrap;
+}
+
+/* 列宽：剩余宽度给「备注名」，其余按内容给足 */
+.apikeys-table th:nth-child(2),
+.apikeys-table td:nth-child(2) {
+  width: 11em;
+}
+
+.apikeys-table th:nth-child(3),
+.apikeys-table td:nth-child(3) {
+  width: 7.5em;
+}
+
+.apikeys-table th:nth-child(4),
+.apikeys-table td:nth-child(4),
+.apikeys-table th:nth-child(5),
+.apikeys-table td:nth-child(5) {
+  width: 10.5em;
+}
+
+.apikeys-table th:nth-child(6),
+.apikeys-table td:nth-child(6) {
+  width: 8.5em;
+}
+
+.apikeys-table th:nth-child(7),
+.apikeys-table td:nth-child(7) {
+  width: 5.5em;
+}
+
+.apikeys-meta {
+  display: none;
 }
 
 .apikeys-table th,
@@ -845,6 +905,10 @@ export default {
   padding: 8px 10px;
   text-align: left;
   border-bottom: 1px solid #eee;
+  /* 长内容（长备注名、长路径）在单元格内折行 */
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .apikeys-table th {
@@ -894,11 +958,72 @@ export default {
   font-size: 0.9em;
 }
 
+/* 复选框本来就偏小，桌面也一起放大 */
+.apikeys-dialog input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
+/* 复选框连同它的文字一起可点，整行做到 ≥32px 才好按 */
+.apikeys-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 2px;
+  cursor: pointer;
+}
+
 @media only screen and (max-width: 768px) {
   .apikeys-dialog {
     width: 94vw;
     max-height: 86vh;
     padding: 12px;
+  }
+
+  /* 手机上 7 列放不下（原来「吊销」按钮会被挤到屏幕外，根本点不到），
+     只留「备注名 + 操作」两列，其余信息收到备注名下方 */
+  .apikeys-table th:nth-child(2),
+  .apikeys-table td:nth-child(2),
+  .apikeys-table th:nth-child(3),
+  .apikeys-table td:nth-child(3),
+  .apikeys-table th:nth-child(4),
+  .apikeys-table td:nth-child(4),
+  .apikeys-table th:nth-child(5),
+  .apikeys-table td:nth-child(5),
+  .apikeys-table th:nth-child(6),
+  .apikeys-table td:nth-child(6) {
+    display: none;
+  }
+
+  .apikeys-table th:nth-child(7),
+  .apikeys-table td:nth-child(7) {
+    width: 5.2em;
+  }
+
+  .apikeys-table th,
+  .apikeys-table td {
+    padding: 6px 8px;
+  }
+
+  .apikeys-meta {
+    display: block;
+    margin-top: 3px;
+    color: dimgray;
+    font-size: 0.9em;
+    white-space: normal;
+  }
+
+  /* 触摸目标至少 32px，手机上才好点 */
+  .apikeys-dialog button,
+  .apikeys-dialog input[type="text"],
+  .apikeys-dialog input[type="number"] {
+    min-height: 32px;
+  }
+
+  .apikeys-dialog input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
   }
 }
 </style>

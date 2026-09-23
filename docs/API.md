@@ -102,13 +102,20 @@ zip 本身要可读，落盘位置要可写；恶意条目名（`..` 跳级、�
 
 ```json
 // 请求体（可选）；target 是想解压到的目标目录 key
-{ "target": "docs/out" }
+// mode: check=只查同名冲突不写盘；skip=跳过同名（默认）；overwrite=覆盖同名
+{ "target": "docs/out", "mode": "skip" }
 ```
 
-- 响应 `200`：
+- 响应 `200`（解压）：
   ```json
-  { "target": "docs/out", "files": 12, "errors": [] }
+  { "target": "docs/out", "files": 12, "skipped": 3, "errors": [] }
   ```
+- `mode: "check"` 只做预检、不写任何东西，用于先问用户「跳过还是覆盖」：
+  ```json
+  { "target": "docs/out", "total": 15, "conflictCount": 3, "conflicts": ["a.txt", "b/c.md"] }
+  ```
+- `mode` 默认 `skip`：目标里已存在的同名文件会被跳过并计入 `skipped`，
+  **不会静默覆盖**；目录对象与目录条目不算冲突。非法 mode 按 `skip` 处理。
 - `errors` 数组收集个别失败条目（如不支持的压缩算法、超限）；整体不是合法 zip 返回 `400`。
 - 上限：`WEBDAV_MAX_UNZIP_ENTRIES`（默认 5000 条）、`WEBDAV_MAX_UNZIP_FILE_SIZE`（默认 100MB/条）。
 - 只支持 store 与 deflate（zip 最常用的两种）；ZIP64 / 多盘暂不支持。
@@ -335,6 +342,17 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
 私有模式下浏览器直链带不上认证头，前端只能「先取回整文件再存成 Blob」——
 既没有进度，又可能被浏览器（尤其 Safari）在异步之后拦掉下载。
 所以这里签发**短时效签名直链**，让下载走浏览器原生下载（有进度条、立刻弹保存框）。
+
+### `POST /api/shares` 的有效期
+
+```json
+{ "key": "docs/a.txt", "expiresInDays": 7 }
+```
+
+- `expiresInDays`：正整数 = 多少天；`null` / 空串 / `0` = 永久；非法值 `400`。
+- **不带**该字段时不改动已有分享；带了就会按请求更新（同一个 key 同一条记录，
+  不会新增），所以「给已有分享改成 7 天」或「改回永久」都会生效。
+- 到期后 `/s/{token}` 一律 404。
 
 ### `GET /api/sign?key={key}&ttl={秒}`
 

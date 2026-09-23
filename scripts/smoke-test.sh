@@ -401,6 +401,21 @@ acode -X DELETE "$MP/chunk.bin?uploadId=$MPID2" > /dev/null
 check "放弃后原对象还在" "keep" "$(curl -s "$MP/chunk.bin")"
 check "清理分片测试目录 204" 204 "$(acode -X DELETE "$MP")"
 
+section "13.13 分段 PUT（Content-Range）必须被拒绝，避免静默损坏"
+CR="$W/range-put"
+check "建目录 201" 201 "$(acode -X MKCOL "$CR")"
+head -c 200000 /dev/zero > /tmp/smoke-cr-full.bin
+head -c 1000 /dev/zero > /tmp/smoke-cr-part.bin
+check "先正常上传 1 个文件 201" 201 "$(acode -X PUT --data-binary @/tmp/smoke-cr-full.bin "$CR/doc.bin")"
+check "文件大小正确" 200000 "$(curl -s -o /dev/null -w '%{size_download}' "$W/range-put/doc.bin")"
+check "分段 PUT 被拒 501" 501 "$(acode -X PUT -H 'Content-Range: bytes 0-999/200000' --data-binary @/tmp/smoke-cr-part.bin "$CR/doc.bin")"
+check "被拒后原文件没有被截断" 200000 "$(curl -s -o /dev/null -w '%{size_download}' "$W/range-put/doc.bin")"
+check "拒绝文案说明原因" 1 "$(curl -s -u "$ADMIN" -X PUT -H 'Content-Range: bytes 0-999/200000' --data-binary @/tmp/smoke-cr-part.bin "$CR/doc.bin" | grep -c '不支持分段 PUT')"
+check "等价整文件的 Content-Range 放行 201" 201 "$(acode -X PUT -H 'Content-Range: bytes 0-199999/200000' --data-binary @/tmp/smoke-cr-full.bin "$CR/whole.bin")"
+check "整文件形式写入正确" 200000 "$(curl -s -o /dev/null -w '%{size_download}' "$W/range-put/whole.bin")"
+check "普通 PUT 不受影响 201" 201 "$(acode -X PUT --data-binary @/tmp/smoke-cr-part.bin "$CR/plain.bin")"
+check "清理 204" 204 "$(acode -X DELETE "$CR")"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

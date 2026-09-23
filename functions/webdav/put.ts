@@ -60,6 +60,41 @@ export async function handleRequestPut(context: DavContext): Promise<Response> {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
+  /**
+   * 分段 PUT（`Content-Range`）：Windows 资源管理器、macOS Finder 挂载 WebDAV
+   * 上传大文件时会这么发——每次只发一段，期望服务端**追加/写入指定偏移**。
+   *
+   * 但 R2 不支持随机写，我们只能整对象覆盖。若不拦，客户端发第 1 段我们写成整个文件、
+   * 发第 2 段又把第 1 段覆盖掉……最后文件只剩最后一段，而且客户端全程收到 201，
+   * 属于**静默的数据损坏**。所以这里明确拒绝，让它回退或报错。
+   *
+   * 例外：`bytes 0-(size-1)/size` 且长度一致，等价于「一次性完整上传」，照常处理。
+   */
+  const contentRange = request.headers.get("Content-Range");
+  if (contentRange) {
+    const matched = /^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i.exec(contentRange.trim());
+    const declaredTotal = parseInt(request.headers.get("Content-Length") || "", 10);
+    let wholeFile = false;
+    if (matched) {
+      const start = parseInt(matched[1], 10);
+      const end = parseInt(matched[2], 10);
+      const total = matched[3] === "*" ? NaN : parseInt(matched[3], 10);
+      wholeFile =
+        start === 0 &&
+        Number.isFinite(total) &&
+        end + 1 === total &&
+        (!Number.isFinite(declaredTotal) || declaredTotal === total);
+    }
+    if (!wholeFile) {
+      return new Response(
+        "本服务不支持分段 PUT（Content-Range）：存储层不支持随机写入，" +
+          "强行接收会导致文件被逐段覆盖而损坏。\n" +
+          "大文件请用网页端上传（自动分片、断点续传），或改用单次 PUT 的客户端。",
+        { status: 501 }
+      );
+    }
+  }
+
   const declaredLength = parseInt(request.headers.get("Content-Length") || "", 10);
   const limit = maxPutSize(env);
   if (Number.isFinite(declaredLength) && declaredLength > limit) {

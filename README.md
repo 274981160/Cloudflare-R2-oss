@@ -222,6 +222,12 @@ Cloudflare Workers 对单个请求体有大小上限（免费版约 **100MB**）
 分片大小 25MB（R2 要求除最后一片外每片 ≥5MB），单个分片失败会自动重试；
 网络中断后重新选同一个文件即可**续传**，不必从头再来。
 
+> **分片与续传只对网页端有效**：分片接口（`POST ?uploads` 等）是 S3 风格的自定义扩展，
+> 标准 WebDAV 客户端不会调用，它们只发单次 `PUT`（受 `WEBDAV_MAX_PUT_SIZE` 限制，默认 100MB，超了返回 `413`）。
+> 另外，Windows 资源管理器 / macOS Finder 挂载上传大文件时会发**分段 PUT**（`Content-Range`），
+> 而 R2 不支持随机写入——本服务会**明确拒绝（501）**并提示改用网页端，
+> 而不是逐段覆盖导致文件静默损坏。
+
 `WEBDAV_MAX_PUT_SIZE` 可以调整这个阈值（单位字节，默认 `104857600`，即 100MB）。
 
 ### 内部保留目录
@@ -409,7 +415,7 @@ npx wrangler pages dev . --r2 BUCKET --persist-to .wrangler/state
 
 ### 冒烟测试
 
-仓库自带一套 WebDAV / API 冒烟测试（271 项断言，覆盖全部 WebDAV 方法、锁、Range、权限、API Key、旧格式兼容、zip 打包完整性、在线解压/压缩与重名保护、回收站、覆盖保护、预览直链与缓存、全局搜索、分片续传与放弃等），本地起好服务后直接跑：
+仓库自带一套 WebDAV / API 冒烟测试（281 项断言，覆盖全部 WebDAV 方法、锁、Range、权限、API Key、旧格式兼容、zip 打包完整性、在线解压/压缩与重名保护、回收站、覆盖保护、预览直链与缓存、全局搜索、分片续传与放弃、分段 PUT 防护等），本地起好服务后直接跑：
 
 ```bash
 bash scripts/smoke-test.sh
@@ -526,7 +532,7 @@ Cloudflare-R2-oss/
 │   └── API.md          # 网页端与后端的接口契约（冻结文件，改动需同步）
 │
 ├── scripts/
-│   ├── smoke-test.sh    # WebDAV / API 冒烟测试（公开读模式），271 项断言
+│   ├── smoke-test.sh    # WebDAV / API 冒烟测试（公开读模式），281 项断言
 │   ├── security-test.sh # 安全模型测试（默认私有模式），90 项断言
 │   └── frontend-test.mjs # 前端纯函数测试（JSON 整理缩进等内容安全底线），48 项断言
 │

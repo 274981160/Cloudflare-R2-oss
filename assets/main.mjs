@@ -490,6 +490,26 @@ export function listUrl(path) {
 }
 
 /** `GET /api/zip/{path}` */
+/**
+ * 打包预检：只统计条目数与估算体积，不产出 zip。
+ * 超限也正常返回信息（overLimit=true），由调用方决定怎么提示。
+ */
+export async function probeZipSize(path) {
+  const url = `${zipUrl(path)}?probe=1`;
+  const response = await apiFetch(url, { cache: "no-store" });
+  const text = await response.text();
+  let data = null;
+  try { data = JSON.parse(text); } catch (error) { /* 非 JSON 按失败处理 */ }
+  if (!response.ok || !data) {
+    throw new ApiError(
+      response.status === 413 ? "超过服务端大小限制" : await describeResponseError(response),
+      response.status,
+      url
+    );
+  }
+  return data;
+}
+
 export function zipUrl(path) {
   const encoded = encodeKeyPath(path);
   return encoded ? `/api/zip/${encoded}` : "/api/zip/";

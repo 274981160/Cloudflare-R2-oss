@@ -13,7 +13,7 @@ import {
   parseBucketPath,
   serverError,
 } from "../../../utils/bucket";
-import { buildZipResponse } from "../../../utils/zipserve";
+import { buildZipResponse, probeZip } from "../../../utils/zipserve";
 import { verifySignedKey } from "../../../utils/signing";
 
 /**
@@ -55,6 +55,14 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
         : auth.anonymous
         ? unauthorized("需要登录")
         : forbidden("没有下载该路径的权限");
+    }
+
+    // ?probe=1：只统计条目与估算体积，不产出 zip。前端打包前先探一次，
+    // 超限就直接提示，别让浏览器下载到一半才失败（或存下一个打不开的"zip"）
+    if (requestUrl.searchParams.get("probe") === "1") {
+      return await probeZip(bucket, path, env, {
+        filter: signedOk ? undefined : (key: string) => canRead(subject, key),
+      });
     }
 
     return await buildZipResponse(bucket, path, env, {

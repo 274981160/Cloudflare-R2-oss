@@ -132,6 +132,32 @@ async function collectEntries(
   return entries;
 }
 
+/**
+ * 打包预检：只统计条目与估算体积，不产出 zip。
+ * 超限返回 413 + 结构化信息；其余返回 200 + {entryCount, estimatedSize, limit}。
+ */
+export async function probeZip(
+  bucket: R2Bucket,
+  path: string,
+  env: Env,
+  options: ZipOptions = {}
+): Promise<Response> {
+  const entries = await collectEntries(bucket, path, options.filter);
+  if (entries === null) return new Response("Not found", { status: 404 });
+  const estimatedSize = estimateZipSize(entries);
+  const limit = options.limit || maxZipSize(env);
+  const body = {
+    entryCount: entries.filter((entry) => !entry.isDirectory).length,
+    estimatedSize,
+    limit,
+    overLimit: estimatedSize > limit,
+  };
+  return new Response(JSON.stringify(body), {
+    status: body.overLimit ? 413 : 200,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
 export async function buildZipResponse(
   bucket: R2Bucket,
   path: string,
@@ -146,9 +172,18 @@ export async function buildZipResponse(
   const totalSize = entries.reduce((sum, entry) => sum + entry.size, 0);
   const limit = options.limit || maxZipSize(env);
   if (totalSize > limit) {
+    // 结构化返回：前端据此提示「多少文件 / 多大 / 上限多少」，并给出逐个下载的出路
     return new Response(
-      `打包体积约 ${totalSize} 字节，超过上限 ${limit} 字节，请分批下载`,
-      { status: 413, headers: { "Content-Type": "text/plain; charset=utf-8" } }
+      JSON.stringify({
+        error: "打包体积超过上限",
+        entryCount: entries.filter((entry) => !entry.isDirectory).length,
+        estimatedSize: totalSize,
+        limit,
+      }),
+      {
+        status: 413,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      }
     );
   }
 

@@ -594,6 +594,7 @@ import {
   searchFiles,
   abortUpload,
   pendingUploadInfo,
+  probeZipSize,
   setPreviewToken,
   setUnauthorizedHandler,
   stripExtension,
@@ -1660,6 +1661,51 @@ export default {
       }
     },
 
+    /**
+     * 目录逐个下载：打包超限时的出路。递归收集所有文件，逐个走 downloadKey，
+     * 失败的继续传后面的，最后把成功/失败数如实告诉用户。
+     */
+    async downloadEachFile(dirKey, dirName) {
+      const collected = [];
+      const walk = async (key) => {
+        const listing = await listDirectory(key);
+        for (const folder of listing.folders || []) await walk(folder.key);
+        for (const file of listing.files || []) collected.push(file);
+      };
+      this.showNotice(`正在统计「${dirName}」里的文件...`, "info");
+      try {
+        await walk(dirKey);
+      } catch (error) {
+        this.showNotice(`读取目录失败：${errorMessage(error)}`, "error");
+        return;
+      }
+      if (!collected.length) {
+        this.showNotice("这个目录里没有可下载的文件", "info");
+        return;
+      }
+      let done = 0;
+      const failed = [];
+      for (const file of collected) {
+        done += 1;
+        this.showNotice(`逐个下载 ${done}/${collected.length}：${file.name}`, "info");
+        try {
+          await downloadKey(file.key, {});
+          // 浏览器原生子下载之间留点间隔，有些浏览器会拦截连续多文件下载
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        } catch (error) {
+          failed.push(file.name);
+        }
+      }
+      if (failed.length) {
+        this.showNotice(
+          `完成：成功 ${collected.length - failed.length} 个，失败 ${failed.length} 个（${failed.slice(0, 3).join("、")}${failed.length > 3 ? " 等" : ""}）`,
+          "error"
+        );
+      } else {
+        this.showNotice(`完成：${collected.length} 个文件全部开始下载`, "success");
+      }
+    },
+
     async downloadItem(item) {
       if (!item) return;
       try {
@@ -1677,6 +1723,28 @@ export default {
           return;
         }
         if (item.type === "folder") {
+          // 先探一次体积：超限就别让浏览器开始下载了——
+          // 签名直链路径超限时浏览器会把错误文本存成"zip"，用户根本不知道发生了什么
+          let probe = null;
+          try {
+            probe = await probeZipSize(item.key);
+          } catch (error) {
+            // 预检失败（旧版后端、网络抖动）就按老流程继续，别挡住下载
+            probe = null;
+          }
+          if (probe && probe.overLimit) {
+            const sizeText = formatSize(probe.estimatedSize);
+            const limitText = formatSize(probe.limit);
+            const ok = window.confirm(
+              `「${item.name}」共 ${probe.entryCount} 个文件，打包约 ${sizeText}，` +
+                `超过服务端上限（${limitText}），无法打包下载。\n\n` +
+                `确定后将对这 ${probe.entryCount} 个文件【逐个下载】，大文件和小文件加起来可能需要较长时间；` +
+                `也可以取消后进文件夹分批选择下载。`
+            );
+            if (!ok) return;
+            await this.downloadEachFile(item.key, item.name);
+            return;
+          }
           // 文件夹打包：优先临时签一个 zip 直链（原生下载带进度），
           // 签名不可用再退回带进度的 XHR 取 Blob，避免「点了没反应」。
           this.showNotice(`正在打包「${item.name}」...`, "info");

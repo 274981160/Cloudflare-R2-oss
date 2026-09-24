@@ -1,5 +1,5 @@
 import { canWrite } from "../../utils/auth";
-import { deletePath, statPath } from "../../utils/core";
+import { CoreError, deletePath, statPath } from "../../utils/core";
 import { DavContext } from "./context";
 import { handleRequestCopy } from "./copy";
 
@@ -30,6 +30,15 @@ export async function handleRequestMove(context: DavContext): Promise<Response> 
   const copyResponse = await handleRequestCopy(context);
   if (copyResponse.status >= 400) return copyResponse;
 
-  await deletePath(bucket, path);
+  try {
+    await deletePath(bucket, path);
+  } catch (error) {
+    if (error instanceof CoreError) {
+      // 复制已经成功、只是清理源失败：不能装作整体成功（那会变成两份），
+      // 也不能回 500 让客户端以为移动根本没发生。按 403/409 如实上报。
+      return new Response(error.message, { status: error.status });
+    }
+    throw error;
+  }
   return new Response(null, { status: copyResponse.status });
 }

@@ -8,6 +8,9 @@ import { normalizePath } from "./auth";
 import {
   isTrashed,
   matchesTrashed,
+  matchesTrashedEntry,
+  type TrashedPrefix,
+  trashedEntries,
   trashedPrefixes,
 } from "./trashindex";
 
@@ -128,6 +131,51 @@ function toFileEntry(obj: any): FileEntry {
   return { ...meta, name: baseName(meta.key) };
 }
 
+function timeOf(obj: any): number {
+  const value = obj && (obj.uploaded ?? obj.uploaded_at);
+  if (!value) return 0;
+  const time = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
+/**
+ * 文件夹在列表里只有名字（没有时间戳），判断它该不该被回收站记录藏起来，
+ * 只能去前缀底下找证据：只要存在一个「删除之后写入」的对象，这个文件夹
+ * 就是用户后来重新建出来的，必须显示。找不到就直接沿用旧判定。
+ */
+async function subtreeHasNewContent(
+  bucket: R2Bucket,
+  dirKey: string,
+  trashedPre?: TrashedPrefix[]
+): Promise<boolean> {
+  const trashed = trashedPre || (await trashedEntries(bucket));
+  const hit = trashed.find(
+    (entry) => dirKey === entry.key || dirKey.startsWith(`${entry.key}/`)
+  );
+  if (!hit) return false;
+  // 路径本身就是文件：直接看它自己的写入时间
+  if (dirKey !== hit.key) {
+    const self: any = await bucket.head(dirKey);
+    return Boolean(self && timeOf(self) > hit.at);
+  }
+  // 旧内容还在原地且都早于删除时间，不能只看第一个对象——
+  // 得翻到出现「删除之后写入」的对象为止，翻完都没有才继续藏。
+  let cursor: string | undefined;
+  do {
+    const probe: any = await bucket.list({
+      prefix: `${dirKey}/`,
+      cursor,
+      include: ["httpMetadata", "customMetadata"],
+    } as any);
+    for (const obj of probe.objects || []) {
+      if (isInternalKey(obj.key)) continue;
+      if (timeOf(obj) > hit.at) return true;
+    }
+    cursor = probe.truncated ? probe.cursor : undefined;
+  } while (cursor);
+  return false;
+}
+
 /**
  * 递归/一层列出对象，自动翻页，并跳过内部保留目录。
  * 默认也会跳过「已进回收站」的内容（includeTrashed=true 时才包含，
@@ -139,7 +187,7 @@ export async function* listAll(
   recursive = false,
   options: { includeTrashed?: boolean } = {}
 ): AsyncGenerator<any> {
-  const trashed = options.includeTrashed ? [] : await trashedPrefixes(bucket);
+  const trashed = options.includeTrashed ? [] : await trashedEntries(bucket);
   let cursor: string | undefined;
   do {
     const listed: any = await bucket.list({
@@ -151,7 +199,7 @@ export async function* listAll(
 
     for (const obj of listed.objects || []) {
       if (isInternalKey(obj.key)) continue;
-      if (!options.includeTrashed && matchesTrashed(trashed, obj.key)) continue;
+      if (!options.includeTrashed && matchesTrashedEntry(trashed, obj.key, timeOf(obj))) continue;
       yield obj;
     }
 
@@ -166,8 +214,11 @@ export async function isCollectionPath(
 ): Promise<boolean> {
   const target = normalizePath(path);
   if (!target) return true;
-  // 回收站里的内容对外一律「不存在」
-  if (await isTrashed(bucket, target)) return false;
+  // 回收站里的内容对外一律「不存在」；但用户后来在同一位置重新写过的东西
+  // （往删过的同名文件夹里解压/上传）是活内容，路径要算「存在」
+  if (await isTrashed(bucket, target)) {
+    return await subtreeHasNewContent(bucket, target);
+  }
 
   const head: any = await bucket.head(target);
   if (head) {
@@ -208,8 +259,14 @@ export async function statPath(
 ): Promise<PathStat | null> {
   const target = normalizePath(path);
   if (!target) return { ...ROOT_STAT };
-  // 回收站里的内容对外一律「不存在」：直链 404、WebDAV 读不到、也不能再签直链
-  if (await isTrashed(bucket, target)) return null;
+  // 回收站里的内容对外一律「不存在」：直链 404、WebDAV 读不到、也不能再签直链。
+  // 但删除之后重新写入的对象是活内容，要放行（见 subtreeHasNewContent）
+  if (await isTrashed(bucket, target)) {
+    if (await subtreeHasNewContent(bucket, target)) {
+      return statPathRaw(bucket, target);
+    }
+    return null;
+  }
 
   const head: any = await bucket.head(target);
   if (head) {
@@ -309,7 +366,7 @@ export async function listDirectory(
   const files: FileEntry[] = [];
   let sawChild = false;
   let cursor: string | undefined;
-  const trashed = await trashedPrefixes(bucket);
+  const trashed = await trashedEntries(bucket);
 
   do {
     const listed: any = await bucket.list({
@@ -322,7 +379,7 @@ export async function listDirectory(
     for (const obj of listed.objects || []) {
       const key = obj.key as string;
       if (isInternalKey(key)) continue;
-      if (matchesTrashed(trashed, key)) continue;
+      if (matchesTrashedEntry(trashed, key, timeOf(obj))) continue;
       sawChild = true;
 
       if (isDirectoryObject(obj)) {
@@ -340,7 +397,12 @@ export async function listDirectory(
     for (const raw of listed.delimitedPrefixes || []) {
       const dirKey = normalizePath(raw as string);
       if (!dirKey || isInternalKey(dirKey)) continue;
-      if (matchesTrashed(trashed, dirKey)) continue;
+      if (
+        matchesTrashedEntry(trashed, dirKey, 0) &&
+        !(await subtreeHasNewContent(bucket, dirKey, trashed))
+      ) {
+        continue;
+      }
       sawChild = true;
       if (!folders.has(dirKey)) {
         folders.set(dirKey, { key: dirKey, name: baseName(dirKey), legacy: false });
@@ -514,7 +576,8 @@ export async function mapLimit<T>(
 export interface CopyOptions {
   overwrite?: boolean;
   /** "0" 只复制集合本身，"infinity" 递归复制。 */
-  depth?: "0" | "infinity";
+  depth?: "0" | "infinity";  /** 恢复流程专用：允许把内容写回回收站标记的原位置 */
+  allowIntoTrashed?: boolean;
 }
 
 export interface CopyResult {
@@ -538,9 +601,13 @@ export async function copyPath(
 
   if (!destination) throw new CoreError(403, "目标路径非法");
   if (source === destination) throw new CoreError(400, "源与目标相同");
-  // 不许把东西写进「已回收」的位置：那里还留着旧内容，会造成两边打架
-  if (await isTrashed(bucket, destination)) {
-    throw new CoreError(409, "目标路径在回收站里，请先恢复或彻底删除");
+  // 不许把东西写进「已回收」的位置：那里还留着旧内容，会造成两边打架。
+  // 例外：恢复流程（allowIntoTrashed）就是要写回回收站里的原位置；
+  // 以及目标位置已经有「删除之后新写入」的活内容（见 subtreeHasNewContent）。
+  if (await isTrashed(bucket, destination) && !options.allowIntoTrashed) {
+    if (!(await subtreeHasNewContent(bucket, destination))) {
+      throw new CoreError(409, "目标路径在回收站里，请先恢复或彻底删除");
+    }
   }
   if (source && destination.startsWith(`${source}/`)) {
     throw new CoreError(400, "不能把资源复制到自身子目录");
@@ -597,20 +664,34 @@ export async function copyPath(
   return { created, copied };
 }
 
-/** 统计目录下的对象数量与总大小（用于打包下载的前置检查）。 */
+/**
+ * 统计目录下的对象数量与总大小（用于打包下载与回收站记录）。
+ * 大目录分页累计；超过 maxCount 只保证「不少于」的下限（标记 `>=` 语义），
+ * 避免删一个几万文件的目录时统计本身把请求拖到超时。
+ */
 export async function measurePath(
   bucket: R2Bucket,
-  path: string
-): Promise<{ count: number; size: number }> {
+  path: string,
+  options: { maxCount?: number } = {}
+): Promise<{ count: number; size: number; approximate: boolean }> {
   const target = normalizePath(path);
   const prefix = target ? `${target}/` : "";
+  const maxCount = options.maxCount ?? 10000;
   let count = 0;
   let size = 0;
-  for await (const obj of listAll(bucket, prefix, true)) {
-    count += 1;
-    size += typeof obj.size === "number" ? obj.size : 0;
+  let cursor: string | undefined;
+  for (;;) {
+    const listed: any = await bucket.list({ prefix, cursor });
+    for (const obj of listed.objects || []) {
+      if (isInternalKey(obj.key)) continue;
+      count += 1;
+      size += typeof obj.size === "number" ? obj.size : 0;
+    }
+    if (count >= maxCount) return { count, size, approximate: Boolean(listed.truncated) || count > maxCount };
+    cursor = listed.truncated ? listed.cursor : undefined;
+    if (!cursor) break;
   }
-  return { count, size };
+  return { count, size, approximate: false };
 }
 
 /** 缩略图对象的 cache-control 由写入方决定，这里只提供常量。 */

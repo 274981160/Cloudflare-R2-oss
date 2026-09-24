@@ -14,7 +14,8 @@
  *
  * 代价：被回收的内容仍占用存储（这是回收站的正常代价），彻底删除时才真的删。
  */
-import { Env, TRASH_PREFIX, trashDays } from "./config";
+import {
+  Env, TRASH_PREFIX, trashDays } from "./config";
 import {
   CoreError,
   copyPath,
@@ -26,6 +27,7 @@ import {
 import {
   createTrashId,
   isTrashKey,
+  isTrashed,
   listTrash,
   loadTrashEntry,
   removeTrashEntry,
@@ -78,9 +80,10 @@ export async function moveToTrash(
   const stat = await statPath(bucket, target);
   if (!stat) return null;
 
+  // 大目录只测到上限为止（记录里 count 会标成下限），别让统计本身拖垮删除请求
   const measured = stat.isDirectory
-    ? await measurePath(bucket, target)
-    : { count: 1, size: stat.size };
+    ? await measurePath(bucket, target, { maxCount: 5000 })
+    : { count: 1, size: stat.size, approximate: false };
 
   const id = createTrashId();
   const name = baseNameOf(target) || target;
@@ -147,7 +150,11 @@ export async function restoreFromTrash(
 
   let target = entry.key;
   let renamed = false;
-  if (await statPath(bucket, target)) {
+  // 「原位置被占用」指的是那里有**别的**活内容。目标位置还在这条记录自己的
+  // 隐藏范围内时不算占用——那正是恢复要去的地方（用户后来往里新写的文件，
+  // 恢复后会与新内容共存；真撞名时 copyPath 的 overwrite:false 会如实报 412）。
+  const selfHidden = await isTrashed(bucket, entry.key);
+  if (!selfHidden && (await statPath(bucket, target))) {
     const slash = entry.key.lastIndexOf("/");
     const parent = slash < 0 ? "" : entry.key.slice(0, slash);
     for (let index = 1; index <= 100; index++) {
@@ -164,17 +171,19 @@ export async function restoreFromTrash(
     if (!renamed) throw new CoreError(409, "原位置被占用，且没能生成可用的新名字");
   }
 
+  // 恢复是「写回回收站标记的原位置」，copyPath 的回收站拦截要放行；
+  // 原位置里用户后来新写入的文件不属于这条记录，不能动（allowIntoTrashed
+  // 配 overwrite:false 恰好保证：同名会 412 报错，其余新文件原样保留）。
+  const restoreOptions = { overwrite: false, depth: "infinity", allowIntoTrashed: true } as const;
   if (entry.movedTo) {
     // 覆盖时被搬走的内容：搬回目标路径
-    await copyPath(bucket, entry.movedTo, target, {
-      overwrite: false,
-      depth: "infinity",
-    });
+    await copyPath(bucket, entry.movedTo, target, restoreOptions);
     await deletePath(bucket, entry.movedTo, { includeTrashed: true });
   } else if (target !== entry.key) {
-    // 标记模式且原位置被占用：这才需要真的搬一次（copy + delete）
-    await copyPath(bucket, entry.key, target, { overwrite: false, depth: "infinity" });
-    await deletePath(bucket, entry.key);
+    // 标记模式且原位置被占用：这才需要真的搬一次（copy + delete）。
+    // 旧位置在回收站标记下，删除时要带 includeTrashed 才删得掉。
+    await copyPath(bucket, entry.key, target, restoreOptions);
+    await deletePath(bucket, entry.key, { includeTrashed: true });
   }
 
   await removeTrashEntry(bucket, id);

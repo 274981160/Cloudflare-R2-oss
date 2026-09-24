@@ -1,5 +1,6 @@
 import { isTrashEnabled } from "../../utils/config";
 import { CoreError, deletePath } from "../../utils/core";
+import { isTrashed } from "../../utils/trashindex";
 import { moveToTrash } from "../../utils/trash";
 import { DavContext } from "./context";
 
@@ -31,12 +32,20 @@ export async function handleRequestDelete(context: DavContext): Promise<Response
 
   try {
     if (isTrashEnabled(env)) {
+      // 注意幂等：批量删除时客户端经常对同一路径重复请求，或多个请求并发到达，
+      // 后到的请求看到的是「已经隐藏」的路径。RFC 4918 允许把这种情况当作已删除
+      // 返回 204；回 404 会让 Windows/Finder 这类客户端把整批任务标成失败。
       const entry = await moveToTrash(
         bucket,
         path,
         subject && subject.account ? subject.account.username : null
       );
-      if (!entry) return new Response("Not found", { status: 404 });
+      if (!entry) {
+        if (await isTrashed(bucket, path)) {
+          return new Response(null, { status: 204 });
+        }
+        return new Response("Not found", { status: 404 });
+      }
       // 告诉客户端「去哪了」，前端据此提示可在回收站恢复
       return new Response(null, {
         status: 204,

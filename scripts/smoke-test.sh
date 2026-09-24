@@ -276,8 +276,14 @@ hit=[i['id'] for i in items if i['key']=='_smoke/trash-target']
 print(hit[0] if hit else '')" 2>/dev/null)"
 atleast "回收站里能查到" 1 "$(printf '%s' "$TRASHID" | grep -c .)"
 atleast "回收站带原路径与大小" 1 "$(printf '%s' "$TRASHJSON" | grep -c '"_smoke/trash-target"')"
-check "回收站里不能往该路径写入 409" 409 "$(acode -X PUT --data 'x' "$W/trash-target/new.txt")"
+# 往已删除的文件夹里写子文件是允许的（同名文件夹里解压就靠这条路径）：
+# 新写入的对象正常可见，旧内容仍被隐藏，互不影响
+check "回收站子树内写入 201" 201 "$(acode -X PUT --data 'x' "$W/trash-target/new.txt")"
+check "新写入的可见" "x" "$(curl -s "$W/trash-target/new.txt")"
+check "旧内容仍隐藏 404" 404 "$(code "$W/trash-target/keep.txt")"
 check "恢复 200" 200 "$(acode -X POST "$BASE/api/trash/$TRASHID/restore")"
+check "恢复后新旧内容都在" "precious data" "$(curl -s "$W/trash-target/keep.txt")"
+check "恢复后新写入的也在" "x" "$(curl -s "$W/trash-target/new.txt")"
 check "恢复后内容完好" "precious data" "$(curl -s "$W/trash-target/keep.txt")"
 check "恢复后回收站不再有它" 0 "$(curl -s -u "$ADMIN" "$BASE/api/trash" | grep -c '"_smoke/trash-target"')"
 check "再次删除 204" 204 "$(acode -X DELETE "$TR")"

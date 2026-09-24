@@ -117,6 +117,7 @@ let indexCache: IndexCache | null = null;
 
 export function invalidateTrashIndex(): void {
   indexCache = null;
+  entryCache = null;
 }
 
 /** 当前生效的回收站前缀列表（缓存 5 秒）。 */
@@ -146,6 +147,65 @@ export function matchesTrashed(prefixes: string[], key: string): boolean {
   if (!target) return false;
   for (const prefix of prefixes) {
     if (target === prefix || target.startsWith(`${prefix}/`)) return true;
+  }
+  return false;
+}
+
+/**
+ * 带删除时间的前缀列表（缓存 5 秒）。
+ *
+ * 为什么需要时间：删除用标记模式，旧内容只是被隐藏、还留在原地。
+ * 如果用户后来在同一位置重新写了东西（往同名文件夹里解压、上传），
+ * 那是新内容，不能被旧记录一并藏掉——否则就会出现
+ * 「解压提示成功，但文件/文件夹不见了」这种事。
+ * 所以判定隐藏时，删除时间之前写入的对象才隐藏，之后写入的照常显示。
+ */
+export interface TrashedPrefix {
+  key: string;
+  /** 删除时间（毫秒）。早于它写入的对象才算被删内容。 */
+  at: number;
+}
+
+interface EntryCache {
+  at: number;
+  prefixes: TrashedPrefix[];
+}
+let entryCache: EntryCache | null = null;
+
+export function invalidateTrashedEntries(): void {
+  entryCache = null;
+}
+
+export async function trashedEntries(bucket: R2Bucket): Promise<TrashedPrefix[]> {
+  const now = Date.now();
+  if (entryCache && now - entryCache.at < INDEX_TTL) return entryCache.prefixes;
+  const prefixes = (await listTrash(bucket))
+    .filter((entry) => !entry.movedTo)
+    .map((entry) => ({
+      key: normalize(entry.key),
+      at: Date.parse(entry.deletedAt) || 0,
+    }))
+    .filter((entry): entry is TrashedPrefix => Boolean(entry.key));
+  entryCache = { at: now, prefixes };
+  return prefixes;
+}
+
+/**
+ * 拿到带时间的列表后的同步判定：
+ * 命中回收站前缀，且对象的写入时间不晚于删除时间 → 属于被删内容 → 隐藏。
+ * writtenAt 传 0/undefined 表示未知时间，维持旧行为（一律隐藏）。
+ */
+export function matchesTrashedEntry(
+  prefixes: TrashedPrefix[],
+  key: string,
+  writtenAt: number
+): boolean {
+  const target = normalize(key);
+  if (!target) return false;
+  for (const prefix of prefixes) {
+    if (target === prefix.key || target.startsWith(`${prefix.key}/`)) {
+      return !(writtenAt > prefix.at);
+    }
   }
   return false;
 }

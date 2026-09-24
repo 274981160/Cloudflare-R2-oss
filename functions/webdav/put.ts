@@ -12,7 +12,7 @@ import {
   statPath,
 } from "../../utils/core";
 import { preserveBeforeOverwrite, releaseTrashedFile } from "../../utils/trash";
-import { isTrashed } from "../../utils/trashindex";
+import { isTrashed, trashedEntries } from "../../utils/trashindex";
 import { DavContext, parentOf } from "./context";
 
 async function handlePutPart(context: DavContext): Promise<Response> {
@@ -108,11 +108,18 @@ export async function handleRequestPut(context: DavContext): Promise<Response> {
     path.startsWith(INTERNAL_PREFIX);
 
   // 已进回收站的位置还留着旧内容。若回收站里正好是「同名文件」，那份内容
-  // 马上就会被这次写入覆盖，记录已无意义 → 自动清掉后继续；
-  // 其余情况（文件夹、或位于回收站子树内）拦住，让用户先恢复或彻底删除。
+  // 马上就会被这次写入覆盖，记录已无意义 → releaseTrashedFile 自动清掉后继续。
+  // 若是落在某条「文件夹」记录的子树里（比如往一个删过的同名文件夹里解压/上传），
+  // 也放行：列表的隐藏判定会按「删除时间」区分新旧对象，这次写入的照常可见，
+  // 旧内容依旧被藏住。releaseTrashedFile 只清文件记录，走到这里还 trashed 的
+  // 只可能是文件夹记录或它的子路径。
   if (!isInternal && (await isTrashed(bucket, path))) {
     const released = await releaseTrashedFile(bucket, path);
-    if (!released || (await isTrashed(bucket, path))) {
+    const stillTrashed = released ? await isTrashed(bucket, path) : true;
+    const insideFolderEntry = (await trashedEntries(bucket)).some(
+      (entry) => path.startsWith(`${entry.key}/`)
+    );
+    if (stillTrashed && !insideFolderEntry) {
       return new Response(
         "该路径在回收站里，请先从回收站恢复或彻底删除后再上传",
         { status: 409 }

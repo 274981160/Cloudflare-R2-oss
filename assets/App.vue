@@ -927,7 +927,9 @@ export default {
     },
 
     cwd: {
-      handler() {
+      handler(next, prev) {
+        // 离开目录前记住它滚到哪里，返回时恢复（H2 滚动位置记忆）
+        if (prev !== undefined) this.saveScroll(prev);
         this.selectedKeys = [];
         this.selectionMode = false;
         this.syncLocation();
@@ -1037,6 +1039,46 @@ export default {
       this.cwd = normalizePath(path);
     },
 
+    /** 记住目录的滚动位置（会话级，不落 localStorage——刷新后从顶部开始反而更自然） */
+    saveScroll(path) {
+      if (!this._scrollMemory) this._scrollMemory = new Map();
+      const top = window.scrollY || document.documentElement.scrollTop || 0;
+      this._scrollMemory.set(normalizePath(path), top);
+      // 别让它无限膨胀
+      if (this._scrollMemory.size > 200) {
+        const oldest = this._scrollMemory.keys().next().value;
+        this._scrollMemory.delete(oldest);
+      }
+    },
+
+    /**
+     * 回到记忆过的目录时恢复滚动位置；没记忆过（新进入）就从顶部开始。
+     * 恢复要等列表把高度撑起来（缩略图行、字体加载都会让高度变化），
+     * 所以滚动到位后短时间内还会复核几次，被浏览器夹回去就再补一次。
+     */
+    restoreScroll() {
+      this.$nextTick(() => {
+        const memory = this._scrollMemory;
+        const target = memory ? memory.get(normalizePath(this.cwd)) : 0;
+        const wanted = typeof target === "number" ? target : 0;
+        if (wanted <= 0) {
+          window.scrollTo({ top: 0, behavior: "instant" });
+          return;
+        }
+        let attempts = 0;
+        const settle = () => {
+          window.scrollTo({ top: wanted, behavior: "instant" });
+          attempts += 1;
+          const current = window.scrollY;
+          if (Math.abs(current - wanted) <= 2) return;
+          if (attempts >= 10 || current >= wanted) return;
+          // 高度还在增长（图片行加载等），稍后再试
+          setTimeout(settle, 120);
+        };
+        settle();
+      });
+    },
+
     goUp() {
       this.navigate(dirname(this.cwd));
     },
@@ -1078,6 +1120,7 @@ export default {
         }
       } finally {
         this.loading = false;
+        this.restoreScroll();
       }
     },
 

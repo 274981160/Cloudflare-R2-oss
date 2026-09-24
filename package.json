@@ -6,7 +6,10 @@
   "license": "MIT",
   "scripts": {
     "dev": "wrangler pages dev . --r2 BUCKET --persist-to .wrangler/state",
-    "deploy": "wrangler pages deploy ."
+    "deploy": "wrangler pages deploy .",
+    "test": "node scripts/frontend-test.mjs",
+    "test:e2e": "node tests/e2e/run.mjs",
+    "test:e2e:seed": "node tests/e2e/seed.mjs"
   },
   "dependencies": {},
   "devDependencies": {

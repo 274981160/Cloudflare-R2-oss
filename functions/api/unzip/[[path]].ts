@@ -1,4 +1,4 @@
-import { Env } from "../../../utils/config";
+import { Env, unzipConcurrency } from "../../../utils/config";
 import {
   authenticate,
   canRead,
@@ -103,21 +103,66 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
       });
     }
 
-    const result = await extractZipArchive(
-      bucket,
-      path,
-      stat.size,
-      target,
-      env,
-      (key) => canWrite(subject, key),
-      index,
-      { mode: mode as UnzipMode }
-    );
-    return jsonResponse({
-      target,
-      files: result.files,
-      skipped: result.skipped,
-      errors: result.errors,
+    /**
+     * 解压可能要处理成百上千个条目，干等没有任何反馈。
+     * 这里用 **NDJSON 流**把进度边做边推给前端：
+     *   {"type":"progress","done":12,"total":50,"files":10,"skipped":2}
+     *   {"type":"done","target":"...","files":45,"skipped":3,"errors":[]}
+     * 出错则推 {"type":"error","message":"..."}。
+     */
+    const encoder = new TextEncoder();
+    const stream = new TransformStream();
+    const writer = stream.writable.getWriter();
+    let lastReport = 0;
+    const send = (payload: unknown) =>
+      writer.write(encoder.encode(`${JSON.stringify(payload)}\n`));
+
+    void (async () => {
+      try {
+        const result = await extractZipArchive(
+          bucket,
+          path,
+          stat.size,
+          target,
+          env,
+          (key) => canWrite(subject, key),
+          index,
+          {
+            mode: mode as UnzipMode,
+            concurrency: unzipConcurrency(env),
+            onProgress: (done, total, stats) => {
+              // 节流：最多每 150ms 推一次，避免条目很多时刷爆流
+              const now = Date.now();
+              if (done < total && now - lastReport < 150) return;
+              lastReport = now;
+              void send({ type: "progress", done, total, ...stats });
+            },
+          }
+        );
+        await send({
+          type: "done",
+          target,
+          files: result.files,
+          skipped: result.skipped,
+          errors: result.errors,
+        });
+      } catch (error) {
+        await send({
+          type: "error",
+          message: error instanceof Error ? error.message : String(error),
+        }).catch(() => {});
+      } finally {
+        await writer.close().catch(() => {});
+      }
+    })();
+
+    return new Response(stream.readable, {
+      headers: {
+        "content-type": "application/x-ndjson; charset=utf-8",
+        "cache-control": "no-store",
+        // 关掉中间层缓冲，让进度尽快到达
+        "x-accel-buffering": "no",
+      },
     });
   } catch (error) {
     return serverError(error);

@@ -5,9 +5,20 @@
  */
 import { Env } from "./config";
 import { DIRECTORY_CONTENT_TYPE, maxUnzipEntries, maxUnzipFileSize } from "./config";
-import { ensureDirectories, isDirectoryObject, listAll } from "./core";
+import {
+  ensureDirectories,
+  isDirectoryObject,
+  listAll,
+  mapLimit,
+} from "./core";
 import { normalizePath } from "./auth";
 import { inflate } from "./inflate";
+
+/**
+ * 解压时的并发写入数。R2 写入主要是 IO 等待，并发能明显提速；
+ * 解压本身（inflate）仍受 Workers 的 CPU 时间限制，所以不宜开太大。
+ */
+export const UNZIP_CONCURRENCY = 4;
 
 /** 单个 zip 条目（中央目录记录）。 */
 export interface ZipEntryInfo {
@@ -304,7 +315,13 @@ export async function extractZipArchive(
   env: Env,
   isWriteAllowed: (key: string) => boolean,
   preloadedIndex?: ZipEntryInfo[] | null,
-  options: { mode?: UnzipMode } = {}
+  options: {
+    mode?: UnzipMode;
+    /** 每处理完一个条目回调一次（用于给前端报进度） */
+    onProgress?: (done: number, total: number, stats: { files: number; skipped: number }) => void;
+    /** 并发写入数（R2 写入是 IO 等待，并发能明显提速） */
+    concurrency?: number;
+  } = {}
 ): Promise<{ files: number; skipped: number; errors: string[] }> {
   const entries = preloadedIndex !== undefined
     ? preloadedIndex
@@ -317,16 +334,58 @@ export async function extractZipArchive(
   const errors: string[] = [];
   let files = 0;
   let skipped = 0;
+  let processed = 0;
 
-  for (const entry of entries) {
+  const onProgress = typeof options.onProgress === "function" ? options.onProgress : null;
+  const concurrency = Math.max(
+    1,
+    Math.min(Number(options.concurrency) || UNZIP_CONCURRENCY, entries.length || 1)
+  );
+  const report = () => {
+    if (onProgress) onProgress(processed, entries.length, { files, skipped });
+  };
+
+  /**
+   * 已确认存在的目录。原来每个文件都要 ensureDirectories 一遍，
+   * 而它会对父链上每一级做两次 head——200 个文件就是几百次多余的 R2 往返。
+   * 这里按目录去重，同一目录只确认一次。
+   */
+  const knownDirs = new Set<string>();
+  const rememberDirs = (key: string) => {
+    const parts = key.split("/");
+    let current = "";
+    for (let i = 0; i < parts.length - 1; i++) {
+      current = current ? `${current}/${parts[i]}` : parts[i];
+      knownDirs.add(current);
+    }
+  };
+  const ensureDirOnce = async (key: string) => {
+    const slash = key.lastIndexOf("/");
+    if (slash < 0) return;
+    const parent = key.slice(0, slash);
+    if (!parent || knownDirs.has(parent)) return;
+    await ensureDirectories(bucket, key);
+    rememberDirs(key);
+  };
+
+  /**
+   * 并发写 R2：原来是逐条串行，几百个文件的包要等很久。
+   * 每个条目之间没有依赖（目录创建由 ensureDirectories 兜底），
+   * 并发度默认 UNZIP_CONCURRENCY（IO 等待为主，CPU 解压仍受 Workers 限制）。
+   */
+  await mapLimit(entries, concurrency, async (entry) => {
     const target = safeZipEntryPath(targetDir, entry.name);
     if (!target) {
       errors.push(`条目名非法，已跳过：${entry.name}`);
-      continue;
+      processed += 1;
+      report();
+      return;
     }
     if (!isWriteAllowed(target)) {
       errors.push(`没有权限写入：${entry.name}`);
-      continue;
+      processed += 1;
+      report();
+      return;
     }
 
     if (entry.isDirectory) {
@@ -336,11 +395,18 @@ export async function extractZipArchive(
           ? (await keyExists(bucket, target)).isDirectory
           : existing.entries.get(target) === true
         : false;
-      if (alreadyDir) continue;
+      if (alreadyDir) {
+        processed += 1;
+        report();
+        return;
+      }
       await bucket.put(target, "", {
         httpMetadata: { contentType: DIRECTORY_CONTENT_TYPE },
       });
-      continue;
+      knownDirs.add(target);
+      processed += 1;
+      report();
+      return;
     }
 
     // 默认不覆盖：目标已有同名文件就跳过，保住用户原有数据
@@ -350,14 +416,16 @@ export async function extractZipArchive(
         : existing.entries.has(target);
       if (exists) {
         skipped += 1;
-        continue;
+        processed += 1;
+        report();
+        return;
       }
     }
 
     const fileLimit = maxUnzipFileSize(env);
     try {
       const data = await readZipEntryData(bucket, zipKey, entry, fileLimit);
-      await ensureDirectories(bucket, target);
+      await ensureDirOnce(target);
       await bucket.put(target, data, {
         httpMetadata: { contentType: "application/octet-stream" },
       });
@@ -366,7 +434,9 @@ export async function extractZipArchive(
     } catch (error) {
       errors.push(`${entry.name}：${error instanceof Error ? error.message : String(error)}`);
     }
-  }
+    processed += 1;
+    report();
+  });
 
   return { files, skipped, errors };
 }

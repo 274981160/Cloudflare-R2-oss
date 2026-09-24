@@ -118,6 +118,21 @@ zip 本身要可读，落盘位置要可写；恶意条目名（`..` 跳级、�
   ```
 - `mode` 默认 `skip`：目标里已存在的同名文件会被跳过并计入 `skipped`，
   **不会静默覆盖**；目录对象与目录条目不算冲突。非法 mode 按 `skip` 处理。
+
+### 解压的响应是 NDJSON 进度流
+
+除 `mode: "check"`（普通 JSON 预检）外，解压返回
+`content-type: application/x-ndjson` 的**流式响应**，一行一个事件：
+
+```json
+{"type":"progress","done":24,"total":200,"files":24,"skipped":0}
+{"type":"done","target":"dir","files":200,"skipped":0,"errors":[]}
+```
+
+- `progress` 最多每 150ms 推一次（条目很多时不会刷爆流），`done` 必定是最后一行。
+- 出错时推 `{"type":"error","message":"..."}`。
+- 并发写入数由 `WEBDAV_UNZIP_CONCURRENCY`（默认 4，1~16）控制；
+  解压时同一目录只确认一次，不会为每个文件重复检查父目录链。
 - `errors` 数组收集个别失败条目（如不支持的压缩算法、超限）；整体不是合法 zip 返回 `400`。
 - 上限：`WEBDAV_MAX_UNZIP_ENTRIES`（默认 5000 条）、`WEBDAV_MAX_UNZIP_FILE_SIZE`（默认 100MB/条）。
 - 只支持 store 与 deflate（zip 最常用的两种）；ZIP64 / 多盘暂不支持。

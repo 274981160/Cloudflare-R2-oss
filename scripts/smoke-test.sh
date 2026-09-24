@@ -416,6 +416,27 @@ check "整文件形式写入正确" 200000 "$(curl -s -o /dev/null -w '%{size_do
 check "普通 PUT 不受影响 201" 201 "$(acode -X PUT --data-binary @/tmp/smoke-cr-part.bin "$CR/plain.bin")"
 check "清理 204" 204 "$(acode -X DELETE "$CR")"
 
+section "13.14 解压并发与流式进度"
+UZ="$W/unzip-progress"
+check "建目录 201" 201 "$(acode -X MKCOL "$UZ")"
+# 造一个多条目 zip（用 python 生成，保证条目数够看进度）
+python3 - "$PWD" <<'PYEOF'
+import zipfile, sys, os
+path = os.path.join("/tmp", "smoke-progress.zip")
+with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    for i in range(25):
+        z.writestr(f"p{i%2}/f{i:02d}.txt", "x" * 200)
+PYEOF
+check "上传测试 zip 201" 201 "$(acode -X PUT --data-binary @/tmp/smoke-progress.zip "$UZ/pack.zip")"
+UZOUT="$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"mode":"skip"}' "$BASE/api/unzip/_smoke/unzip-progress/pack.zip")"
+atleast "返回 NDJSON 进度流" 1 "$(printf '%s' "$UZOUT" | grep -c '"type":"progress"')"
+atleast "以 done 事件收尾" 1 "$(printf '%s' "$UZOUT" | grep -c '"type":"done"')"
+check "done 报告条目数" 25 "$(printf '%s' "$UZOUT" | tail -1 | python3 -c "import json,sys; print(json.load(sys.stdin)['files'])")"
+atleast "进度里的 total 正确" 1 "$(printf '%s' "$UZOUT" | grep -c '"total":25')"
+check "解压内容正确" 200 "$(curl -s -o /dev/null -w '%{size_download}' "$W/unzip-progress/p0/f00.txt")"
+check "check 预检仍是普通 JSON（不是流）" 1 "$(curl -s -u "$ADMIN" -X POST -H 'Content-Type: application/json' -d '{"mode":"check"}' "$BASE/api/unzip/_smoke/unzip-progress/pack.zip" | grep -c '"conflictCount"')"
+check "清理 204" 204 "$(acode -X DELETE "$UZ")"
+
 section "14. 删除语义"
 check "DELETE 目录 204" 204 "$(acode -X DELETE "$W/docs-moved")"
 check "递归删除生效 404" 404 "$(code "$W/docs-moved/sub/deep.txt")"

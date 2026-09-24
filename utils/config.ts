@@ -28,6 +28,21 @@ export const DEFAULT_MAX_DEPTH_ITEMS = 10000;
 export const DEFAULT_MAX_ZIP_SIZE = 1024 * 1024 * 1024; // 1GB
 export const DEFAULT_MAX_UNZIP_ENTRIES = 5000;
 export const DEFAULT_MAX_UNZIP_FILE_SIZE = 100 * 1000 * 1000; // 100MB
+/** 解压时的并发写入数（R2 写入以 IO 等待为主，并发能明显提速） */
+export const DEFAULT_UNZIP_CONCURRENCY = 4;
+
+/**
+ * 解压并发度（1~16，默认 4）。
+ *
+ * 说明：本地 miniflare 的 R2 是单文件 SQLite，并发写会争锁、还测不出网络延迟，
+ * 所以**本地无法验证并发的收益**（实测噪声 ±50%）。线上 R2 是网络服务，
+ * 每次 put 有 10~50ms 延迟，200 个条目串行就是好几秒，并发能把等待重叠起来。
+ * 因此默认取一个温和值 4；如果实际感觉更慢，把它设为 1 即回到串行。
+ */
+export function unzipConcurrency(env: Env): number {
+  return Math.min(Math.max(readInt(env.WEBDAV_UNZIP_CONCURRENCY, DEFAULT_UNZIP_CONCURRENCY), 1), 16);
+}
+
 /** 回收站默认保留天数：超期自动彻底删除 */
 export const DEFAULT_TRASH_DAYS = 30;
 

@@ -65,6 +65,15 @@
     </div>
     <progress v-if="uploadProgress !== null" :value="uploadProgress" max="100"></progress>
 
+    <!-- 解压进度：解压可能要处理成百上千个条目，得让用户看到进展 -->
+    <div v-if="extractStatus" class="upload-status">
+      <div class="upload-status-head">
+        <span class="upload-status-text" v-text="extractStatus"></span>
+        <span v-if="extractProgress !== null" v-text="`${extractProgress}%`"></span>
+      </div>
+      <progress v-if="extractProgress !== null" :value="extractProgress" max="100"></progress>
+    </div>
+
     <div class="app-bar">
       <input
         type="search"
@@ -689,6 +698,9 @@ export default {
      */
     uploadTasks: [],
     showUploadDetail: false,
+    /** 解压进度（解压可能要处理成百上千个条目，干等没反馈） */
+    extractStatus: "",
+    extractProgress: null,
     uploading: false,
   }),
 
@@ -2425,8 +2437,21 @@ export default {
           mode = overwrite ? "overwrite" : "skip";
         }
 
-        this.showNotice(`正在解压「${name}」...`, "info");
-        const result = await extractArchive(zipKey, targetDir, { mode });
+        this.extractStatus = `正在解压「${name}」...`;
+        this.extractProgress = null;
+        const result = await extractArchive(zipKey, targetDir, {
+          mode,
+          onProgress: (event) => {
+            const done = Number(event.done) || 0;
+            const total = Number(event.total) || 0;
+            this.extractProgress = total
+              ? Math.min(100, Math.round((done / total) * 100))
+              : null;
+            this.extractStatus = `正在解压「${name}」：${done}/${total} 个条目`;
+          },
+        });
+        this.extractStatus = "";
+        this.extractProgress = null;
         const failed = Array.isArray(result.errors) ? result.errors.length : 0;
         const skipped = Number(result.skipped) || 0;
         const parts = [`「${name}」解压完成，共 ${result.files || 0} 个文件`];
@@ -2436,6 +2461,8 @@ export default {
         await this.fetchFiles();
         return true;
       } catch (error) {
+        this.extractStatus = "";
+        this.extractProgress = null;
         this.showNotice(`解压失败：${errorMessage(error)}`, "error");
         return false;
       }

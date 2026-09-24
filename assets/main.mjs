@@ -864,11 +864,62 @@ export async function extractArchive(zipKey, target, options) {
   if (target) payload.target = target;
   if (settings.mode) payload.mode = settings.mode;
   const body = JSON.stringify(payload);
-  return apiFetchJson(url, {
+
+  const response = await apiFetch(url, {
     method: "POST",
     body,
     headers: { "Content-Type": "application/json" },
+    cache: "no-store",
   });
+  if (!response.ok) {
+    throw new ApiError(await describeResponseError(response), response.status, url);
+  }
+
+  const onProgress =
+    typeof settings.onProgress === "function" ? settings.onProgress : null;
+  const contentType = String(response.headers.get("content-type") || "");
+
+  // 解压走 NDJSON 流：边做边推进度（{"type":"progress"|"done"|"error"}）
+  if (contentType.includes("ndjson") && response.body) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result = null;
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let index = buffer.indexOf("\n");
+      while (index >= 0) {
+        const line = buffer.slice(0, index).trim();
+        buffer = buffer.slice(index + 1);
+        index = buffer.indexOf("\n");
+        if (!line) continue;
+        let event = null;
+        try {
+          event = JSON.parse(line);
+        } catch (error) {
+          continue;
+        }
+        if (event && event.type === "progress") {
+          if (onProgress) onProgress(event);
+        } else if (event && event.type === "done") {
+          result = event;
+        } else if (event && event.type === "error") {
+          throw new ApiError(String(event.message || "解压失败"), 500, url);
+        }
+      }
+    }
+    if (!result) throw new ApiError("解压没有返回结果", 500, url);
+    return result;
+  }
+
+  // 非流式（例如 mode=check 的预检）还是普通 JSON
+  try {
+    return await response.json();
+  } catch (error) {
+    throw new ApiError("无法解析解压响应", response.status, url);
+  }
 }
 
 /**

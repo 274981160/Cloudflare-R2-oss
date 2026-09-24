@@ -3,8 +3,8 @@
  *
  * 1) 屏蔽仓库里的源码 / 脚本 / 文档等非站点文件。
  *    Cloudflare Pages 会把输出目录里的一切都当静态资源发布，`utils/*.ts`、
- *    `scripts/*.sh`、`docs/*.md`、`package.json` 这些本来不该被当成站点资源访问
- *    （测试脚本里还写着本地演示口令）。这里统一回 404。
+ *    `scripts/*.sh`、`docs/*.md`、`tests/**`、`package.json` 这些本来不该被当成
+ *    站点资源访问（测试脚本里还写着本地演示口令）。这里统一回 404。
  *    `_redirects` 不支持 404 状态码，所以只能用中间件做。
  *
  * 2) 给所有响应补上几个基础安全响应头（已存在的不覆盖）。
@@ -15,6 +15,7 @@ const BLOCKED_PREFIXES = [
   "/utils/",
   "/scripts/",
   "/docs/",
+  "/tests/",
   "/.git/",
   "/.wrangler/",
 ];

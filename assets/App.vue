@@ -105,7 +105,10 @@
         <span v-if="index > 0" class="crumb-separator">/</span>
         <button
           class="crumb"
-          :class="{ current: index === breadcrumbs.length - 1 }"
+          :class="{ current: index === breadcrumbs.length - 1, 'drop-target': dragOverKey === crumb.path }"
+          @dragover="onFolderDragOver($event, { key: crumb.path })"
+          @dragleave="onFolderDragLeave({ key: crumb.path })"
+          @drop="onFolderDrop($event, { key: crumb.path })"
           v-text="crumb.name"
           @click="navigate(crumb.path)"
         ></button>
@@ -156,7 +159,13 @@
       <li v-for="folder in displayedFolders" :key="folder.key">
         <div
           class="file-item"
-          :class="{ selected: isSelected(folder.key) }"
+          :class="{ selected: isSelected(folder.key), 'drop-target': dragOverKey === folder.key }"
+          :draggable="canWrite"
+          @dragstart="onItemDragStart($event, folder)"
+          @dragend="onItemDragEnd"
+          @dragover="onFolderDragOver($event, folder)"
+          @dragleave="onFolderDragLeave(folder)"
+          @drop="onFolderDrop($event, folder)"
           tabindex="0"
           @pointerdown="onRowPointerDown($event, folder)"
           @pointerup="onRowPointerUp"
@@ -200,6 +209,9 @@
         <div
           class="file-item"
           :class="{ selected: isSelected(file.key) }"
+          :draggable="canWrite"
+          @dragstart="onItemDragStart($event, file)"
+          @dragend="onItemDragEnd"
           tabindex="0"
           @pointerdown="onRowPointerDown($event, file)"
           @pointerup="onRowPointerUp"
@@ -673,6 +685,10 @@ export default {
     renameName: "",
     formError: "",
     moveTargets: [],
+    /** 正在被拖拽的项目（内部拖拽移动用；系统文件拖入时为空） */
+    dragItems: [],
+    /** 当前高亮的放置目标（文件夹行） */
+    dragOverKey: "",
     clipboard: [],
     selectedKeys: [],
     /**
@@ -1765,6 +1781,8 @@ export default {
     /* ---------------- 上传 ---------------- */
 
     onDragEnter() {
+      // 内部拖拽（移动文件）时不显示「松开上传」提示
+      if (this.dragItems.length) return;
       this.dragging = true;
     },
 
@@ -1775,6 +1793,13 @@ export default {
     },
 
     onDrop(event) {
+      // 内部拖拽（移动文件）不该被当成「从系统拖文件进来上传」
+      if (this.dragItems.length) {
+        this.dragItems = [];
+        this.dragOverKey = "";
+        this.dragging = false;
+        return;
+      }
       this.dragging = false;
       if (!this.canWrite) {
         this.showNotice("当前为只读模式，无法上传", "error");
@@ -2481,6 +2506,85 @@ export default {
       this.showFolderPicker = true;
     },
 
+    /* ---------------- 拖拽移动（桌面端） ---------------- */
+
+    /** 拖起来的项目：拖的是已选中项就整批拖，否则只拖这一个 */
+    onItemDragStart(event, item) {
+      if (!item || !this.canWrite || !event.dataTransfer) return;
+      const keys = this.isSelected(item.key) ? this.selectedKeys.slice() : [item.key];
+      const items = this.folders
+        .concat(this.files)
+        .filter((entry) => keys.includes(entry.key));
+      if (!items.length) return;
+      this.dragItems = items;
+      this.dragOverKey = "";
+      event.dataTransfer.effectAllowed = "move";
+      // 自定义类型用于区分「内部拖拽」与「从系统拖文件进来上传」
+      event.dataTransfer.setData("application/x-flaredrive-move", JSON.stringify(keys));
+      event.dataTransfer.setData("text/plain", items.map((entry) => entry.name).join("、"));
+    },
+
+    onItemDragEnd() {
+      this.dragItems = [];
+      this.dragOverKey = "";
+    },
+
+    /** 目标文件夹能不能接收这些拖拽项（items 不传就用当前拖拽中的） */
+    canDropInto(folder, items) {
+      const list = (Array.isArray(items) ? items : this.dragItems).filter(Boolean);
+      if (!folder || !list.length) return false;
+      const target = normalizePath(folder.key);
+      if (!target) return true; // 根目录：只要不是原地就行
+      for (const item of list) {
+        if (item.key === target) return false; // 拖到自己身上
+        if (target.startsWith(`${item.key}/`)) return false; // 拖进自己的子目录
+      }
+      // 拖到当前所在目录 = 原地，没有意义
+      if (target === normalizePath(this.cwd)) return false;
+      return true;
+    },
+
+    onFolderDragOver(event, folder) {
+      if (!this.dragItems.length) return; // 系统文件拖入，交给上传逻辑
+      if (!this.canDropInto(folder)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      this.dragOverKey = folder.key;
+    },
+
+    onFolderDragLeave(folder) {
+      if (this.dragOverKey === (folder && folder.key)) this.dragOverKey = "";
+    },
+
+    async onFolderDrop(event, folder) {
+      if (!this.dragItems.length) return; // 系统文件拖入：让根容器的上传逻辑处理
+      event.preventDefault();
+      event.stopPropagation();
+      const items = this.dragItems.slice();
+      // 注意：必须先判定再清空——canDropInto 要用这份列表，
+      // 之前先清空导致判定永远为 false、拖拽静默不生效
+      const allowed = this.canDropInto(folder, items);
+      this.dragItems = [];
+      this.dragOverKey = "";
+      if (!allowed) return;
+      await this.moveItemsTo(items, folder.key);
+    },
+
+    /** 直接移动到某个目录（拖放用，跳过文件夹选择器） */
+    async moveItemsTo(items, destination) {
+      const list = (items || []).filter(Boolean);
+      if (!list.length) return;
+      const target = normalizePath(destination);
+      const samePlace = list.every((item) => dirname(item.key) === target);
+      if (samePlace) {
+        this.showNotice("目标位置与当前位置相同", "info");
+        return;
+      }
+      this.moveTargets = list;
+      await this.onFolderPicked(target);
+    },
+
     async onFolderPicked(destination) {
       const items = this.moveTargets.slice();
       this.showFolderPicker = false;
@@ -2738,6 +2842,14 @@ export default {
 .crumb.current {
   color: #222;
   font-weight: 600;
+}
+
+/* 拖拽移动时高亮可放置的目标 */
+.file-item.drop-target,
+.crumb.drop-target {
+  outline: 2px dashed #0b5fa5;
+  outline-offset: -2px;
+  background-color: #eef4fb;
 }
 
 .crumb-separator {

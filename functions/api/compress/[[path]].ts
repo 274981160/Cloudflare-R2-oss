@@ -7,7 +7,7 @@ import {
   isInternalPath,
   unauthorized,
   type Subject,
-} from "../../../utils/auth";
+  authUnauthorized,} from "../../../utils/auth";
 import {
   badRequest,
   jsonResponse,
@@ -34,7 +34,7 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
     if (isInternalPath(path)) return forbidden("不允许写入内部目录");
 
     const auth = await authenticate(request, env, bucket);
-    if (auth.invalid) return unauthorized("用户名或密码不正确");
+    if (auth.invalid) return authUnauthorized(auth);
     const subject: Subject = { account: auth.account, anonymous: auth.anonymous, env };
 
     if (!canWrite(subject, path)) {

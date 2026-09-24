@@ -8,7 +8,7 @@ import {
   isInternalPath,
   unauthorized,
   type Subject,
-} from "../../utils/auth";
+  authUnauthorized,} from "../../utils/auth";
 import { notFound, parseBucketPath, serverError } from "../../utils/bucket";
 import { isThumbnailKey, statPath } from "../../utils/core";
 import { verifyPreviewToken, verifySignedKey } from "../../utils/signing";
@@ -68,7 +68,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
 
     if (!signedOk && !previewOk && !canRead(subject, path)) {
       return auth.invalid
-        ? unauthorized("用户名或密码不正确")
+        ? authUnauthorized(auth)
         : auth.anonymous
         ? unauthorized("需要登录")
         : forbidden("没有读取该对象的权限");

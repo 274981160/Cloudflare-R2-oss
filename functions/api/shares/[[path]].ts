@@ -5,7 +5,7 @@ import {
   forbidden,
   unauthorized,
   type Subject,
-} from "../../../utils/auth";
+  authUnauthorized,} from "../../../utils/auth";
 import {
   badRequest,
   jsonResponse,
@@ -34,7 +34,7 @@ async function loadSubject(context: any) {
 
   const auth = await authenticate(context.request, context.env, parsed.bucket);
   if (auth.invalid) {
-    return { denied: unauthorized("用户名或密码不正确") };
+    return { denied: authUnauthorized(auth) };
   }
   if (!auth.account) {
     return { denied: unauthorized("需要登录后才能管理分享链接") };

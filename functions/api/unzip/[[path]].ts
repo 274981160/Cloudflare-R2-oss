@@ -7,7 +7,7 @@ import {
   isInternalPath,
   unauthorized,
   type Subject,
-} from "../../../utils/auth";
+  authUnauthorized,} from "../../../utils/auth";
 import {
   badRequest,
   jsonResponse,
@@ -38,7 +38,7 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
     if (!path) return badRequest("请指定要解压的 zip 文件");
 
     const auth = await authenticate(request, env, bucket);
-    if (auth.invalid) return unauthorized("用户名或密码不正确");
+    if (auth.invalid) return authUnauthorized(auth);
     const subject: Subject = { account: auth.account, anonymous: auth.anonymous, env };
 
     const stat = await statPath(bucket, path);

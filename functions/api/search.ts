@@ -4,7 +4,7 @@ import {
   canRead,
   unauthorized,
   type Subject,
-} from "../../utils/auth";
+  authUnauthorized,} from "../../utils/auth";
 import {
   badRequest,
   jsonResponse,
@@ -37,7 +37,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     if (!bucket) return notFound();
 
     const auth = await authenticate(request, env, bucket);
-    if (auth.invalid) return unauthorized("用户名或密码不正确");
+    if (auth.invalid) return authUnauthorized(auth);
     const subject: Subject = { account: auth.account, anonymous: auth.anonymous, env };
 
     // 私有模式下匿名一律拒绝（与 /api/list 一致）：

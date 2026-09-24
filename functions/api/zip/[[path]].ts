@@ -6,7 +6,7 @@ import {
   forbidden,
   unauthorized,
   type Subject,
-} from "../../../utils/auth";
+  authUnauthorized,} from "../../../utils/auth";
 import {
   badRequest,
   notFound,
@@ -33,7 +33,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     const requestUrl = new URL(request.url);
 
     const auth = await authenticate(request, env, bucket);
-    if (auth.invalid) return unauthorized("用户名或密码不正确");
+    if (auth.invalid) return authUnauthorized(auth);
     const subject: Subject = {
       account: auth.account,
       anonymous: auth.anonymous,
@@ -51,7 +51,7 @@ export const onRequestGet: PagesFunction<Env> = async function (context) {
     const allowed = signedOk || canList(subject, path) || canRead(subject, path);
     if (!allowed) {
       return auth.invalid
-        ? unauthorized("用户名或密码不正确")
+        ? authUnauthorized(auth)
         : auth.anonymous
         ? unauthorized("需要登录")
         : forbidden("没有下载该路径的权限");

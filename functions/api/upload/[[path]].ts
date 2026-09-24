@@ -53,7 +53,7 @@ async function handleUpload(context: any): Promise<Response> {
   const url = new URL(request.url);
 
   const auth = await authenticate(request, env, bucket);
-  if (auth.invalid) return unauthorized("账号密码或 API Key 不正确");
+  if (auth.invalid) return authUnauthorized(auth);
   const subject: Subject = {
     account: auth.account,
     anonymous: auth.anonymous,

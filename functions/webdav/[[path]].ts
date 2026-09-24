@@ -12,7 +12,7 @@ import {
   isInternalPath,
   unauthorized,
   type Subject,
-} from "../../utils/auth";
+  authUnauthorized,} from "../../utils/auth";
 import { notFound, parseBucketPath, serverError } from "../../utils/bucket";
 import { isThumbnailKey, statPath } from "../../utils/core";
 import { findBlockingLock } from "../../utils/lock";
@@ -118,7 +118,7 @@ export const onRequest: PagesFunction<Env> = async function (context) {
 
   const auth = await authenticate(request, env, bucket);
   if (auth.invalid) {
-    return withDavHeaders(unauthorized("用户名或密码不正确"), env);
+    return withDavHeaders(authUnauthorized(auth), env);
   }
   const subject: Subject = {
     account: auth.account,

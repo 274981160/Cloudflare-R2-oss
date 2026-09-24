@@ -11,6 +11,13 @@ import {
   parsePermissions,
   permissionAllows,
 } from "./permissions";
+import {
+  clearLoginFailures,
+  clientIpOf,
+  isLoginThrottleEnabled,
+  loginDelayRequired,
+  recordLoginFailure,
+} from "./throttle";
 
 // 路径与权限工具下沉到 permissions.ts，这里继续对外导出以保持调用方不变
 export { normalizePath, parsePermissions, permissionAllows };
@@ -38,6 +45,11 @@ export interface AuthResult {
   anonymous: boolean;
   /** 带了 Authorization 头但凭据不合法。 */
   invalid: boolean;
+  /**
+   * 登录限流要求再等待的秒数（B3）。大于 0 表示本次凭据校验被跳过，
+   * 调用方应回 401 并带 Retry-After 头，不要提示「密码错误」。
+   */
+  throttledFor?: number;
 }
 
 const RESERVED_ENV_KEYS = new Set([
@@ -213,18 +225,42 @@ export async function authenticate(
   const username = decoded.slice(0, separator);
   const password = decoded.slice(separator + 1);
 
+  // 登录限流（B3）：等待期没过就直接拒绝，不比对密码。
+  // 失败次数够了以后，攻击者每次尝试都会被要求等更久；正常用户最多等几秒。
+  if (bucket && isLoginThrottleEnabled(env)) {
+    const delayMs = await loginDelayRequired(bucket, clientIpOf(request), username);
+    if (delayMs > 0) {
+      return {
+        account: null,
+        anonymous: false,
+        invalid: true,
+        throttledFor: Math.ceil(delayMs / 1000),
+      };
+    }
+  }
+
   for (const account of parseAccounts(env)) {
     const userMatches = timingSafeEqual(account.username, username);
     const passwordMatches = timingSafeEqual(account.password, password);
     if (userMatches && passwordMatches) {
+      if (bucket && isLoginThrottleEnabled(env)) {
+        await clearLoginFailures(bucket, clientIpOf(request), username);
+      }
       return { account, anonymous: false, invalid: false };
     }
   }
 
   if (bucket && looksLikeApiKey(password)) {
-    return authenticateApiKey(bucket, password);
+    const apiKeyResult = await authenticateApiKey(bucket, password);
+    if (!apiKeyResult.invalid && bucket && isLoginThrottleEnabled(env)) {
+      await clearLoginFailures(bucket, clientIpOf(request), username);
+    }
+    return apiKeyResult;
   }
 
+  if (bucket && isLoginThrottleEnabled(env)) {
+    await recordLoginFailure(bucket, clientIpOf(request), username);
+  }
   return { account: null, anonymous: false, invalid: true };
 }
 
@@ -293,6 +329,25 @@ export function isInternalPath(path: string | null | undefined): boolean {
 
 export function buildSubject(env: Env, account: Account | null, anonymous: boolean): Subject {
   return { account, anonymous, env };
+}
+
+/**
+ * 认证失败的统一 401：带限流等待头。
+ * throttledFor > 0 时附 Retry-After，提示客户端（以及登录框）稍后再试。
+ */
+export function authUnauthorized(auth: AuthResult, message = "用户名或密码不正确"): Response {
+  const response = unauthorized(message);
+  if (auth.throttledFor && auth.throttledFor > 0) {
+    return new Response(`${message}（尝试过于频繁，请 ${auth.throttledFor} 秒后再试）`, {
+      status: 401,
+      headers: {
+        "WWW-Authenticate": 'Basic realm="FlareDrive", charset="UTF-8"',
+        "Content-Type": "text/plain; charset=utf-8",
+        "Retry-After": String(auth.throttledFor),
+      },
+    });
+  }
+  return response;
 }
 
 export function unauthorized(message = "Unauthorized"): Response {

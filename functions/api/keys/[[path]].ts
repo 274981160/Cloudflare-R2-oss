@@ -1,5 +1,6 @@
 import { Env } from "../../../utils/config";
 import {
+  authUnauthorized,
   authenticate,
   forbidden,
   unauthorized,
@@ -27,7 +28,7 @@ const ROUTE = "/api/keys";
  */
 function requireKeyManager(auth: AuthResult): Response | null {
   const account = auth.account;
-  if (!account) return unauthorized("需要登录");
+  if (!account) return authUnauthorized(auth, "需要登录");
   if (account.source === "apikey") {
     return forbidden("API Key 不能用于管理密钥");
   }

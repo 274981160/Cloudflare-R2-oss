@@ -370,6 +370,11 @@ function buildHighlightHtml(text, tokens, matches, currentIndex) {
   return html;
 }
 
+/** etag 头通常带引号（"abc"），比较前统一去掉 */
+function cleanEtag(value) {
+  return String(value || "").trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+}
+
 /** 按 docs/API.md 第 3 节，用 WebDAV PUT 写回对象 */
 export default {  props: {
     modelValue: Boolean,
@@ -424,6 +429,8 @@ export default {  props: {
     /** 编辑器内撤销 / 重做（Ctrl+Z / Ctrl+Y），按「一段连续输入」合并成一步 */
     undoStack: [],
     redoStack: [],
+    /** 打开文件时的 etag：保存前对比，检测「别人改过文件」的冲突（H4） */
+    baseEtag: "",
   }),
 
   computed: {
@@ -749,6 +756,7 @@ export default {  props: {
     /** 打开时用 apiFetch 取原始内容 */
     async load() {
       this.reset();
+      this.baseEtag = "";
       await this.startLoad();
     },
 
@@ -783,6 +791,7 @@ export default {  props: {
         if (token !== this._token) return;
         this.content = text;
         this.original = text;
+        this.baseEtag = cleanEtag(response.headers.get("ETag") || response.headers.get("etag") || "");
         this.resetHistory(text);
         this.loading = false;
         this.jsonValid = false;
@@ -937,6 +946,24 @@ export default {  props: {
 
     /* ---------------- 保存 ---------------- */
 
+    /** 保存前的冲突检测：文件在我们打开后被别人改过（etag 变了）就先问一声 */
+    async checkConflict() {
+      if (!this.baseEtag) return false; // 打开时没拿到 etag，无从比较
+      const item = this.item;
+      if (!item || !item.key) return false;
+      try {
+        const response = await apiFetch(rawUrl(item.key), {
+          method: "HEAD",
+          cache: "no-store",
+        });
+        if (!response.ok) return false; // 读不到了让保存自己报错
+        const current = cleanEtag(response.headers.get("ETag") || response.headers.get("etag") || "");
+        return Boolean(current) && current !== this.baseEtag;
+      } catch (error) {
+        return false;
+      }
+    },
+
     async save() {
       if (this.isReadOnly) {
         this.setStatus("只读模式，无法保存", true);
@@ -945,6 +972,18 @@ export default {  props: {
       if (this.saving) return;
       const item = this.item;
       if (!item || !item.key) return;
+      // H4 保存冲突检测：只在用户真的改过内容时才值得检查与打扰
+      if (this.dirty && (await this.checkConflict())) {
+        const overwrite = window.confirm(
+          "「" + this.displayName + "」在你打开之后被修改过（可能是另一台设备或另一个人）。\n\n" +
+            "点「确定」用你现在编辑的内容覆盖它（被覆盖的旧内容会进回收站，可以找回）；\n" +
+            "点「取消」先不保存，你可以关闭后重新打开，把两边内容合并。"
+        );
+        if (!overwrite) {
+          this.setStatus("已取消保存；重新打开文件可看到最新内容", false);
+          return;
+        }
+      }
       const url = webdavUrl(item.key);
       this.saving = true;
       this.setStatus("正在保存...", false);
@@ -958,6 +997,7 @@ export default {  props: {
           throw new ApiError(await describeResponseError(response), response.status, url);
         }
         this.original = this.content;
+        this.baseEtag = cleanEtag(response.headers.get("ETag") || response.headers.get("etag") || "") || this.baseEtag;
         this.setStatus("已保存", false);
         this.$emit("saved", { key: item.key, size: this.content.length });
       } catch (error) {

@@ -902,6 +902,7 @@ export default {
       if (this.profile.authenticated && this.thumbMissing.length) {
         items.push({ text: `生成缩略图（${this.thumbMissing.length}）` });
       }
+      if (this.files.length || this.folders.length) items.push({ text: "导出文件清单" });
       items.push({ text: this.profile.authenticated ? "退出登录" : "登录" });
       return items;
     },
@@ -1747,6 +1748,64 @@ export default {
       } else {
         this.showNotice(`完成：${collected.length} 个文件全部开始下载`, "success");
       }
+    },
+
+    /**
+     * 导出文件清单（H3）：递归收集当前目录下所有文件，生成 CSV 下载。
+     * 列：相对路径、大小(字节)、可读大小、修改时间、类型。
+     */
+    async exportFileList() {
+      const rows = [];
+      const base = normalizePath(this.cwd);
+      const walk = async (key, prefix) => {
+        const listing = await listDirectory(key);
+        for (const folder of listing.folders || []) {
+          await walk(folder.key, prefix ? `${prefix}/${folder.name}` : folder.name);
+        }
+        for (const file of listing.files || []) {
+          rows.push({
+            path: prefix ? `${prefix}/${file.name}` : file.name,
+            size: file.size || 0,
+            readable: formatSize(file.size || 0),
+            modified: file.uploaded ? formatDate(file.uploaded) : "",
+            type: file.contentType || file.mime || "",
+          });
+        }
+      };
+      this.showNotice("正在统计文件清单...", "info");
+      try {
+        await walk(base, "");
+      } catch (error) {
+        this.showNotice(`读取目录失败：${errorMessage(error)}`, "error");
+        return;
+      }
+      if (!rows.length) {
+        this.showNotice("当前目录是空的，没有可导出的清单", "info");
+        return;
+      }
+      // CSV 转义：字段里有引号/逗号/换行就整体加引号
+      const csvEscape = (value) => {
+        const text = String(value == null ? "" : value);
+        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      };
+      const header = "路径,大小(字节),大小,修改时间,类型";
+      const lines = rows.map((row) =>
+        [row.path, row.size, row.readable, row.modified, row.type].map(csvEscape).join(",")
+      );
+      const csv = `\ufeff${header}\n${lines.join("\n")}`;
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const stamp = new Date().toISOString().slice(0, 10);
+      const name = `文件清单-${base || "全部文件"}-${stamp}.csv`.replace(/\//g, "_");
+      const anchor = document.createElement("a");
+      anchor.href = URL.createObjectURL(blob);
+      anchor.download = name;
+      anchor.rel = "noopener";
+      anchor.style.display = "none";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(anchor.href), 5000);
+      this.showNotice(`已导出 ${rows.length} 个文件的清单`, "success");
     },
 
     async downloadItem(item) {
@@ -2856,6 +2915,9 @@ export default {
           break;
         case "回收站":
           this.showTrash = true;
+          break;
+        case "导出文件清单":
+          this.exportFileList();
           break;
         case "登录":
           this.openLoginDialog();

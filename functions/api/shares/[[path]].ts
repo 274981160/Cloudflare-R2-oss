@@ -16,9 +16,11 @@ import {
 import { statPath } from "../../../utils/core";
 import { normalizePath } from "../../../utils/permissions";
 import {
+  applySharePassword,
   createShareToken,
   deleteShare,
   findShareForKey,
+  hasPassword,
   listShares,
   loadShare,
   publicShare,
@@ -130,6 +132,23 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
       ? loaded.subject.account.username
       : null;
 
+    // 访问密码（B2）：带 password 字段才处理；
+    // 空字符串 / null = 清除密码，非空 = 设置或修改密码（明文不落盘）
+    let passwordValue: string | null = null;
+    let passwordRequested = false;
+    if (payload && Object.prototype.hasOwnProperty.call(payload, "password")) {
+      passwordRequested = true;
+      passwordValue = String(payload.password == null ? "" : payload.password);
+    }
+
+    // 暂停 / 恢复：带 suspended 字段才处理（对已有分享做状态切换）
+    let suspendedValue: boolean | null = null;
+    let suspendedRequested = false;
+    if (payload && Object.prototype.hasOwnProperty.call(payload, "suspended")) {
+      suspendedRequested = true;
+      suspendedValue = Boolean(payload.suspended);
+    }
+
     // 同一个 key 已经有同一创建者的分享时直接复用，避免刷出一堆记录
     const existing = findShareForKey(
       await listShares(loaded.bucket),
@@ -137,22 +156,42 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
       createdBy
     );
     if (existing) {
-      // 复用同一条记录；但如果这次显式指定了有效期，就把它更新掉，
-      // 否则用户「给已有分享设 7 天」会毫无效果。
+      // 复用同一条记录；显式指定的字段（有效期/密码/暂停）逐个更新，
+      // 否则用户「给已有分享设 7 天」之类的操作会毫无效果。
+      let updated: ShareRecord = { ...existing };
+      let changed = false;
       if (expiryRequested) {
         const nextExpiresAt = expiresInDays
           ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
           : null;
-        if ((existing.expiresAt || null) !== nextExpiresAt) {
-          const updated: ShareRecord = { ...existing, expiresAt: nextExpiresAt };
-          await saveShare(loaded.bucket, updated);
-          return jsonResponse(publicShare(updated, origin), 200);
+        if ((updated.expiresAt || null) !== nextExpiresAt) {
+          updated = { ...updated, expiresAt: nextExpiresAt };
+          changed = true;
         }
       }
-      return jsonResponse(publicShare(existing, origin), 200);
+      if (passwordRequested) {
+        const before = `${updated.passwordHash || ""}|${updated.passwordSalt || ""}`;
+        updated = await applySharePassword(updated, passwordValue || "");
+        const after = `${updated.passwordHash || ""}|${updated.passwordSalt || ""}`;
+        if (before !== after) changed = true;
+      }
+      if (suspendedRequested) {
+        const nextSuspended = suspendedValue || false;
+        if (Boolean(updated.suspended) !== nextSuspended) {
+          updated = nextSuspended
+            ? { ...updated, suspended: true }
+            : (() => { const { suspended: _s, ...rest } = updated; return rest; })();
+          changed = true;
+        }
+      }
+      if (changed) {
+        await saveShare(loaded.bucket, updated);
+      }
+      return jsonResponse(publicShare(updated, origin), changed ? 200 : 200);
     }
 
-    const record: ShareRecord = {
+    // 新建分享时也可以直接带密码与暂停状态（一般用不到暂停，但保持一致性）
+    let record: ShareRecord = {
       token: createShareToken(),
       key,
       type: stat.isDirectory ? "folder" : "file",
@@ -165,6 +204,12 @@ export const onRequestPost: PagesFunction<Env> = async function (context) {
             ).toISOString()
           : null,
     };
+    if (passwordRequested && passwordValue) {
+      record = await applySharePassword(record, passwordValue);
+    }
+    if (suspendedRequested && suspendedValue) {
+      record = { ...record, suspended: true };
+    }
 
     await saveShare(loaded.bucket, record);
     return jsonResponse(publicShare(record, origin), 201);

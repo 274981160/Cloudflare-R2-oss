@@ -369,7 +369,17 @@
             <option value="0">永久有效</option>
           </select>
         </label>
-        <p class="form-hint">到期后链接自动失效；也可以随时在「分享管理」里吊销。</p>
+        <label class="form-field">
+          <span class="form-label">访问密码（可选）</span>
+          <input
+            type="text"
+            class="form-input"
+            v-model="sharePassword"
+            placeholder="留空表示不设密码"
+            autocomplete="off"
+          />
+        </label>
+        <p class="form-hint">设置密码后，访问者需先输入密码才能看到内容（30 天内免重复输入）。到期后链接自动失效；也可以随时在「分享管理」里暂停或吊销。</p>
         <p v-if="formError" class="form-error" v-text="formError"></p>
         <div class="form-actions">
           <button type="button" class="text-button" @click="closeShareDialog">取消</button>
@@ -660,6 +670,8 @@ export default {
     shareTarget: null,
     /** 分享有效期（天）；"0" 表示永久 */
     shareExpiry: "7",
+    /** 分享弹窗里输入的访问密码（空 = 不设密码） */
+    sharePassword: "",
     showCompressDialog: false,
     compressName: "",
     compressSources: [],
@@ -2514,6 +2526,7 @@ export default {
       this.showShareDialog = false;
       this.shareTarget = null;
       this.formError = "";
+      this.sharePassword = "";
     },
 
     async confirmShare() {
@@ -2522,7 +2535,10 @@ export default {
       const days = Number(this.shareExpiry);
       const expiresInDays = Number.isInteger(days) && days > 0 ? days : null;
       try {
-        const share = await createShare(normalizePath(item.key), { expiresInDays });
+        const share = await createShare(normalizePath(item.key), {
+          expiresInDays,
+          password: this.sharePassword || "",
+        });
         const link = share.absoluteUrl || share.url;
         if (!link) {
           this.formError = "服务端没有返回分享链接";
@@ -2531,7 +2547,8 @@ export default {
         const ok = await copyTextToClipboard(link);
         this.closeShareDialog();
         const label = expiresInDays ? `有效期 ${expiresInDays} 天` : "永久有效";
-        if (ok) this.showNotice(`分享链接已复制（${label}）`, "success");
+        const pwLabel = this.sharePassword ? "、已设访问密码" : "";
+        if (ok) this.showNotice(`分享链接已复制（${label}${pwLabel}）`, "success");
         else this.showNotice(`复制失败，链接：${link}`, "error");
       } catch (error) {
         this.formError = `创建分享失败：${errorMessage(error)}`;

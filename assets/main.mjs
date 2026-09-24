@@ -2970,6 +2970,8 @@ export function normalizeShare(data) {
     createdAt: raw.createdAt || null,
     createdBy: raw.createdBy ? String(raw.createdBy) : "",
     expiresAt: raw.expiresAt || null,
+    hasPassword: raw.hasPassword === true,
+    suspended: raw.suspended === true,
   };
 }
 
@@ -3096,6 +3098,31 @@ export async function listShares() {
   const data = await apiFetchJson("/api/shares");
   const list = data && Array.isArray(data.shares) ? data.shares : [];
   return list.map(normalizeShare);
+}
+
+/**
+ * 更新分享：暂停/恢复、设置/清除访问密码（复用 POST /api/shares 的更新语义）。
+ * 只带要改的字段；传 password: "" 表示清除密码。
+ */
+export async function updateShare(key, options) {
+  const settings = options || {};
+  const body = { key: normalizePath(key) };
+  if (Object.prototype.hasOwnProperty.call(settings, "suspended")) {
+    body.suspended = Boolean(settings.suspended);
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, "password")) {
+    body.password = String(settings.password == null ? "" : settings.password);
+  }
+  if (Object.prototype.hasOwnProperty.call(settings, "expiresInDays")) {
+    const days = Number(settings.expiresInDays);
+    body.expiresInDays = Number.isInteger(days) && days > 0 ? days : null;
+  }
+  const data = await apiFetchJson("/api/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return normalizeShare(data);
 }
 
 /** `DELETE /api/shares/{token}`：成功 204；已不存在（404）按已失效处理 */

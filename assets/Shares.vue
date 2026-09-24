@@ -46,6 +46,8 @@
             <tr v-for="share in shares" :key="share.token">
               <td class="shares-key">
                 <code v-text="share.key || '（根目录）'"></code>
+                <span v-if="share.suspended" class="shares-badge shares-badge-warn">已暂停</span>
+                <span v-if="share.hasPassword" class="shares-badge">密码</span>
                 <span v-if="share.createdBy" class="shares-by" v-text="`由 ${share.createdBy} 创建`"></span>
                 <!-- 窄屏下「创建时间 / 过期时间」两列会被隐藏，这里补一行等价的文字 -->
                 <span class="shares-key-meta" v-text="mobileMeta(share)"></span>
@@ -70,6 +72,15 @@
                   @click="openLink(share)"
                 >
                   <span>打开</span>
+                </button>
+                <button
+                  type="button"
+                  class="shares-button"
+                  :aria-label="share.suspended ? `恢复分享 ${share.token}` : `暂停分享 ${share.token}`"
+                  :disabled="togglingToken === share.token"
+                  @click="toggleSuspend(share)"
+                >
+                  <span v-text="share.suspended ? '恢复' : '暂停'"></span>
                 </button>
                 <button
                   type="button"
@@ -107,6 +118,7 @@ import {
   formatDate,
   listShares,
   revokeShare,
+  updateShare,
   shareTypeLabel,
 } from "/assets/main.mjs";
 
@@ -131,6 +143,8 @@ export default {
     forbidden: false,
     notImplemented: false,
     revokingToken: "",
+    /** 正在切换暂停状态的分享 token */
+    togglingToken: "",
   }),
 
   watch: {
@@ -262,6 +276,35 @@ export default {
         return;
       }
       window.open(link, "_blank", "noopener");
+    },
+
+    /** 暂停 / 恢复：链接不变，只是访问开关 */
+    async toggleSuspend(share) {
+      if (!share || !share.token || this.togglingToken) return;
+      const name = share.key || "（根目录）";
+      const next = !share.suspended;
+      const tip = next
+        ? `确定要暂停「${name}」的分享吗？暂停后链接打开会提示「已暂停」，恢复后链接不变、继续可用。`
+        : `恢复「${name}」的分享？恢复后原链接立即可用。`;
+      if (!window.confirm(tip)) return;
+      this.togglingToken = share.token;
+      this.listMessage = "";
+      this.listMessageError = false;
+      try {
+        await updateShare(share.key, { suspended: next });
+        this.copyHint = "";
+        this.copyHintError = false;
+        await this.fetchShares();
+        this.listMessage = next ? "已暂停该分享（链接未变，可随时恢复）" : "已恢复该分享";
+        this.listMessageError = false;
+      } catch (error) {
+        if (!this.handleAccessError(error)) {
+          this.listMessage = `${next ? "暂停" : "恢复"}失败：${errorMessage(error)}`;
+          this.listMessageError = true;
+        }
+      } finally {
+        this.togglingToken = "";
+      }
     },
 
     async revoke(share) {
@@ -415,6 +458,20 @@ export default {
 }
 
 /* 长/短两套按钮文案：窄屏用短的，避免按钮自己把列撑宽 */
+.shares-badge {
+  display: inline-block;
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  vertical-align: middle;
+  background: #eef4ff;
+  color: #2a5db0;
+}
+.shares-badge-warn {
+  background: #fff3e0;
+  color: #b25f00;
+}
 .shares-btn-short {
   display: none;
 }
@@ -498,7 +555,21 @@ export default {
     display: none;
   }
 
-  .shares-btn-short {
+  .shares-badge {
+  display: inline-block;
+  font-size: 11px;
+  border-radius: 999px;
+  padding: 1px 7px;
+  margin-left: 6px;
+  vertical-align: middle;
+  background: #eef4ff;
+  color: #2a5db0;
+}
+.shares-badge-warn {
+  background: #fff3e0;
+  color: #b25f00;
+}
+.shares-btn-short {
     display: inline;
   }
 

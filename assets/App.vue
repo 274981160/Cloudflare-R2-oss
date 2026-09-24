@@ -10,17 +10,58 @@
       <div class="drop-hint" v-text="`松开鼠标，上传到「${currentFolderName}」`"></div>
     </div>
 
-    <div v-if="uploadStatus" class="upload-status">
-      <span class="upload-status-text" v-text="uploadStatus"></span>
-      <span v-text="uploadProgress === null ? '' : `${uploadProgress}%`"></span>
-      <button
-        v-if="uploading"
-        type="button"
-        class="upload-cancel"
-        @click="cancelUpload"
-      >
-        <span>取消</span>
-      </button>
+    <div v-if="uploadTasks.length" class="upload-status">
+      <div class="upload-status-head">
+        <span class="upload-status-text" v-text="uploadSummary"></span>
+        <span v-if="uploading" class="upload-status-current" v-text="uploadStatus"></span>
+        <span v-else-if="uploadProgress !== null" v-text="`${uploadProgress}%`"></span>
+        <button
+          type="button"
+          class="upload-toggle"
+          :aria-expanded="showUploadDetail ? 'true' : 'false'"
+          @click="showUploadDetail = !showUploadDetail"
+        >
+          <span v-text="showUploadDetail ? '收起' : '详情'"></span>
+        </button>
+        <button
+          v-if="uploading"
+          type="button"
+          class="upload-cancel"
+          @click="cancelUpload"
+        >
+          <span>取消</span>
+        </button>
+      </div>
+
+      <!-- 每个文件一条：哪个成功、哪个失败、失败原因，失败的可单独重试 -->
+      <ul v-if="showUploadDetail" class="upload-task-list">
+        <li v-for="task in uploadTasks" :key="task.id" class="upload-task" :class="task.status">
+          <span class="upload-task-name" v-text="task.name"></span>
+          <span class="upload-task-state" v-text="uploadStateText(task)"></span>
+          <span
+            v-if="task.status === 'failed' && task.error"
+            class="upload-task-error"
+            v-text="task.error"
+          ></span>
+          <button
+            v-if="task.status === 'failed'"
+            type="button"
+            class="upload-task-retry"
+            @click="retryUploadTask(task.id)"
+          >
+            <span>重试</span>
+          </button>
+        </li>
+      </ul>
+
+      <div v-if="!uploading && failedUploads.length" class="upload-status-foot">
+        <button type="button" class="upload-retry-all" @click="retryFailedUploads">
+          <span v-text="`重试全部失败（${failedUploads.length}）`"></span>
+        </button>
+        <button type="button" class="upload-dismiss" @click="dismissUploadPanel">
+          <span>关闭</span>
+        </button>
+      </div>
     </div>
     <progress v-if="uploadProgress !== null" :value="uploadProgress" max="100"></progress>
 
@@ -471,7 +512,13 @@
     ></PreviewOverlay>
 
     <Transition name="fade">
-      <div v-if="notice" class="notice" :class="noticeType" role="status" v-text="notice"></div>
+      <div
+        v-if="notice"
+        class="notice"
+        :class="[noticeType, { 'above-upload-panel': uploadTasks.length > 0 }]"
+        role="status"
+        v-text="notice"
+      ></div>
     </Transition>
   </div>
 </template>
@@ -636,6 +683,12 @@ export default {
     uploadStatus: "",
     uploadErrors: [],
     uploadDirErrors: [],
+    /**
+     * 本次上传的每个文件一条记录，用来显示「哪个成功、哪个失败、失败原因」。
+     * 与 uploadQueue（待传队列）并存：队列管顺序，这里管展示与重试。
+     */
+    uploadTasks: [],
+    showUploadDetail: false,
     uploading: false,
   }),
 
@@ -746,6 +799,22 @@ export default {
       const keyword = this.search.trim().toLowerCase();
       if (!keyword) return this.sortedFiles;
       return this.sortedFiles.filter((file) => file.name.toLowerCase().includes(keyword));
+    },
+
+    /** 本次上传里失败的任务 */
+    failedUploads() {
+      return this.uploadTasks.filter((task) => task.status === "failed");
+    },
+
+    /** 上传汇总（面板头显示） */
+    uploadSummary() {
+      const total = this.uploadTasks.length;
+      if (!total) return "";
+      const done = this.uploadTasks.filter((task) => task.status === "done").length;
+      const failed = this.failedUploads.length;
+      const parts = [`已完成 ${done}/${total}`];
+      if (failed) parts.push(`失败 ${failed}`);
+      return parts.join(" · ");
     },
 
     /** 是否处于「全部目录搜索」结果视图 */
@@ -1454,6 +1523,51 @@ export default {
       this.selectedKeys = [item.key];
     },
 
+    /** 单个任务的状态文案 */
+    uploadStateText(task) {
+      if (!task) return "";
+      if (task.status === "uploading") return `${task.progress || 0}%`;
+      if (task.status === "done") return "已完成";
+      if (task.status === "failed") return "失败";
+      return "等待中";
+    },
+
+    /** 重试单个失败的任务 */
+    async retryUploadTask(id) {
+      const task = this.uploadTasks.find((item) => item.id === id);
+      if (!task || task.status !== "failed" || !task.file) return;
+      task.status = "pending";
+      task.progress = 0;
+      task.error = "";
+      this.uploadErrors = [];
+      this.uploadQueue.push({ file: task.file, basedir: task.basedir, name: task.uploadName, displayId: task.id });
+      this.uploadTotalCount += 1;
+      await this.processUploadQueue();
+    },
+
+    /** 重试全部失败项 */
+    async retryFailedUploads() {
+      const failed = this.failedUploads.slice();
+      if (!failed.length) return;
+      for (const task of failed) {
+        task.status = "pending";
+        task.progress = 0;
+        task.error = "";
+        this.uploadQueue.push({ file: task.file, basedir: task.basedir, name: task.uploadName, displayId: task.id });
+      }
+      this.uploadErrors = [];
+      this.uploadTotalCount += failed.length;
+      this.showUploadDetail = true;
+      await this.processUploadQueue();
+    },
+
+    /** 关掉上传面板（失败项记录也清掉） */
+    dismissUploadPanel() {
+      if (this.uploading) return;
+      this.uploadTasks = [];
+      this.showUploadDetail = false;
+    },
+
     /**
      * 取消进行中的上传。
      * 会中断当前请求、停止队列，并**放弃服务端的分片任务**——
@@ -1790,6 +1904,26 @@ export default {
       }
 
       if (finalTasks.length) {
+        // 给每个文件建一条展示记录（状态 / 进度 / 失败原因 / 可重试）
+        this.uploadTasks = finalTasks.map((task, index) => {
+          const key = joinKey(task.basedir, task.name || task.file.name);
+          return {
+            id: `up-${Date.now()}-${index}`,
+            key,
+            name: basename(key) || key,
+            uploadName: task.name || task.file.name,
+            basedir: task.basedir,
+            size: Number(task.file.size) || 0,
+            file: task.file,
+            status: "pending",
+            progress: 0,
+            error: "",
+          };
+        });
+        finalTasks.forEach((task, index) => {
+          task.displayId = this.uploadTasks[index].id;
+        });
+        this.showUploadDetail = this.uploadTasks.length > 1;
         this.uploadQueue.push(...finalTasks);
         this.uploadTotalCount += finalTasks.length;
       }
@@ -1923,6 +2057,14 @@ export default {
           const task = this.uploadQueue.shift();
           const file = task.file;
           const key = joinKey(task.basedir, task.name || file.name);
+          const record = task.displayId
+            ? this.uploadTasks.find((item) => item.id === task.displayId)
+            : null;
+          if (record) {
+            record.status = "uploading";
+            record.progress = 0;
+            record.error = "";
+          }
           this._uploadCurrentTask = task;
           // 取消上传靠它中断正在传的分片
           const controller =
@@ -1943,14 +2085,22 @@ export default {
             await uploadWithThumbnail(key, file, {
               signal: controller ? controller.signal : undefined,
               onUploadProgress: (progress) => {
-                this.uploadProgress = progress.total
+                const percent = progress.total
                   ? Math.min(100, Math.round((progress.loaded / progress.total) * 100))
                   : 0;
+                this.uploadProgress = percent;
+                if (record) record.progress = percent;
               },
               onResume: (info) => {
                 this.uploadStatus = `续传中（已完成 ${info.doneParts}/${info.totalParts} 片）：${this.uploadDisplayPath(key)}`;
               },
             });
+            // 只有真的传完才标成功（放在 try 内，失败分支不会走到这里）
+            if (record) {
+              record.status = "done";
+              record.progress = 100;
+              record.error = "";
+            }
           } catch (error) {
             if (this._uploadCancelled) {
               this.uploadFinishedCount++;
@@ -1959,6 +2109,10 @@ export default {
             }
             console.error("上传失败", key, error);
             const resumable = pendingUploadInfo(key, file);
+            if (record) {
+              record.status = "failed";
+              record.error = errorMessage(error);
+            }
             this.uploadErrors.push(
               resumable
                 ? `${this.uploadDisplayPath(key)}：${errorMessage(error)}（进度已保存，重新选择同一个文件即可续传）`
@@ -2012,6 +2166,8 @@ export default {
       this.uploadDirErrors = [];
       if (failures.length) {
         this.showNotice(`上传完成，但有失败项：${failures.join("；")}`, "error");
+        // 有失败项就留着面板，方便逐个重试
+        this.showUploadDetail = true;
       } else if (createdDirs) {
         this.showNotice(`上传完成，并创建了 ${createdDirs} 个空文件夹`, "success");
       } else {
@@ -2020,6 +2176,15 @@ export default {
       await this.fetchFiles();
       if (!aborted && uploadedZips.length) {
         await this.offerExtractUploaded(uploadedZips);
+      }
+      // 全部成功：让「已完成 N/N」显示一会儿再自动收起，不长期占着页面
+      if (!failures.length && !aborted) {
+        setTimeout(() => {
+          if (!this.uploading && !this.failedUploads.length) {
+            this.uploadTasks = [];
+            this.showUploadDetail = false;
+          }
+        }, 4000);
       }
     },
 
@@ -2554,6 +2719,111 @@ export default {
 }
 
 /* 搜索提示行 / 全局搜索入口 */
+/* 上传面板：汇总一行 + 可展开的每文件状态 */
+.upload-status-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.upload-status-text {
+  font-weight: 600;
+}
+
+.upload-status-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.upload-status-current {
+  color: dimgray;
+  font-size: 0.9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 45%;
+}
+
+.upload-toggle,
+.upload-dismiss {
+  min-height: 28px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background-color: white;
+  color: #0b5fa5;
+  font-size: 0.9em;
+}
+
+.upload-task-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.upload-task {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.9em;
+}
+
+.upload-task-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-task-state {
+  color: #c9c9c9;
+  font-variant-numeric: tabular-nums;
+}
+
+.upload-task.done .upload-task-state {
+  color: #7bd88f;
+}
+
+.upload-task.failed .upload-task-state {
+  color: #ff8a9b;
+}
+
+.upload-task-error {
+  flex-basis: 100%;
+  color: #ff8a9b;
+  font-size: 0.9em;
+  word-break: break-all;
+}
+
+.upload-task-retry,
+.upload-retry-all {
+  min-height: 28px;
+  padding: 2px 10px;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  border: 1px solid #f0c9d0;
+  border-radius: 6px;
+  background-color: white;
+  color: #b00020;
+  font-size: 0.9em;
+}
+
+.upload-status-foot {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .upload-cancel {
   margin-left: 8px;
   min-height: 28px;
@@ -2725,19 +2995,25 @@ export default {
   margin-right: 4px;
 }
 
+.notice.above-upload-panel {
+  bottom: min(46vh, 340px);
+}
+
 .upload-status {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 30;
+  /* 纵向排列：头部一行 + 任务列表 + 底部按钮，别挤成一行 */
   display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 4px 10px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
   background-color: rgba(32, 32, 32, 0.86);
   color: white;
   font-size: 0.8em;
+  max-height: 70vh;
 }
 
 .upload-status-text {
@@ -2770,6 +3046,8 @@ export default {
   left: 50%;
   transform: translateX(-50%);
   bottom: 72px;
+  /* 上传面板也在底部，提示要往上让，别互相盖住 */
+  transition: bottom 0.2s ease;
   z-index: 50;
   max-width: min(560px, 90vw);
   padding: 8px 14px;

@@ -360,19 +360,26 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
 需要认证，且调用者对被分享的 key 必须有读权限。请求体：
 
 ```json
-{ "key": "photos/2026", "expiresInDays": 30 }
+{ "key": "photos/2026", "expiresInDays": 30, "password": "可选", "suspended": false }
 ```
 
 - `key`：要分享的文件或目录的对象键（目录不带尾斜杠）。
 - `expiresInDays`：可选，正整数；不填表示长期有效。
-- 同一个 key 已有分享且未过期时，直接返回既有的那条（`200`），不会重复创建；
-  新建返回 `201`。
+- `password`：可选（B2）。显式带上才处理：非空字符串 = 设置/修改访问密码
+  （只存加盐哈希，明文不落盘）；空字符串 = 清除密码。设置后访问者需先输密码，
+  验证通过 30 天内免重复输入；修改密码后旧凭证立即失效。
+- `suspended`：可选（B2）。`true` = 暂停分享（链接不变，访问一律 404 并提示
+  「分享已暂停」）；`false` = 恢复。用于临时关闭访问而不吊销重发。
+- 同一个 key 已有分享且未过期时，直接复用那条记录（`200`）并应用本次显式指定
+  的字段；新建返回 `201`。
 
 ```json
 {
   "token": "s_9f2c1ab34d5e6f708192",
   "key": "photos/2026",
   "type": "folder",
+  "hasPassword": true,
+  "suspended": false,
   "url": "/s/s_9f2c1ab34d5e6f708192",
   "absoluteUrl": "https://<域名>/s/s_9f2c1ab34d5e6f708192",
   "createdAt": "2026-01-01T00:00:00.000Z",
@@ -381,7 +388,8 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
 }
 ```
 
-`type` 为 `file` 或 `folder`，由服务端探测得出。
+`type` 为 `file` 或 `folder`，由服务端探测得出；`hasPassword` / `suspended`
+反映当前状态。
 
 ### `GET /api/shares`
 
@@ -399,7 +407,11 @@ curl -X PUT https://<域名>/webdav/backup/raw.bin \
 
 **匿名可访问**（这是唯一例外），无需任何认证头。
 
-- token 不存在或已过期 → `404`（不区分「不存在」与「已过期」，避免探测）。
+- token 不存在、已过期或**已暂停** → `404`（不区分，避免探测）；
+  暂停中的分享返回一个「分享已暂停」的提示页，说明链接未失效、恢复后可继续用。
+- 设置了访问密码的分享：未验证前返回密码输入页（密码错误 `401`）；
+  提交正确密码（`POST` 表单到同一 URL）后签发 `HttpOnly` Cookie，
+  30 天内免重复输入，改密码后旧凭证立即失效。
 - 分享的是文件：只能访问 `/s/{token}` 本身，返回内容，支持 `Range` 与条件请求；
   带 `?download=1` 时强制下载。
 - 分享的是目录：`/s/{token}` 返回一个只读的 HTML 目录页（只列出该目录下的内容）；

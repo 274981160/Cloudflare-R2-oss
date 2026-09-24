@@ -203,7 +203,8 @@ async function loadShareRecord(
     return null;
   }
   if (isExpired(record)) return null;
-  if (record.suspended) return null;
+  // 注意：这里不过滤 suspended——loadShare（公开访问）会过滤，
+  // loadShareAnyState（分享入口的管理判断）需要看到暂停记录才能给出「已暂停」提示
   if (normalizePath(record.key).startsWith(normalizePath(INTERNAL_PREFIX))) {
     // 内部目录永远不能被分享
     return null;

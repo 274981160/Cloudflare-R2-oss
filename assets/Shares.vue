@@ -84,6 +84,15 @@
                 </button>
                 <button
                   type="button"
+                  class="shares-button"
+                  :aria-label="share.hasPassword ? `清除分享 ${share.token} 的密码` : `给分享 ${share.token} 设置密码`"
+                  :disabled="togglingToken === share.token"
+                  @click="togglePassword(share)"
+                >
+                  <span v-text="share.hasPassword ? '清除密码' : '设密码'"></span>
+                </button>
+                <button
+                  type="button"
                   class="shares-button danger"
                   :aria-label="`吊销分享 ${share.token}`"
                   :disabled="revokingToken === share.token"
@@ -300,6 +309,39 @@ export default {
       } catch (error) {
         if (!this.handleAccessError(error)) {
           this.listMessage = `${next ? "暂停" : "恢复"}失败：${errorMessage(error)}`;
+          this.listMessageError = true;
+        }
+      } finally {
+        this.togglingToken = "";
+      }
+    },
+
+    /** 设置 / 清除访问密码：清零后拿到链接即可访问 */
+    async togglePassword(share) {
+      if (!share || !share.token || this.togglingToken) return;
+      const name = share.key || "（根目录）";
+      let password = "";
+      if (share.hasPassword) {
+        if (!window.confirm(`确定要清除「${name}」的访问密码吗？清除后任何拿到链接的人都能访问。`)) return;
+      } else {
+        password = window.prompt(`给「${name}」设置访问密码（留空取消）：`, "");
+        if (password == null) return;
+        password = password.trim();
+        if (!password) return;
+      }
+      this.togglingToken = share.token;
+      this.listMessage = "";
+      this.listMessageError = false;
+      try {
+        await updateShare(share.key, { password });
+        this.copyHint = "";
+        this.copyHintError = false;
+        await this.fetchShares();
+        this.listMessage = password ? "已设置访问密码（原来验证过的设备需要重新输入）" : "已清除访问密码";
+        this.listMessageError = false;
+      } catch (error) {
+        if (!this.handleAccessError(error)) {
+          this.listMessage = `密码设置失败：${errorMessage(error)}`;
           this.listMessageError = true;
         }
       } finally {

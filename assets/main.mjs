@@ -3085,6 +3085,11 @@ export async function createShare(key, options) {
     const days = Number(settings.expiresInDays);
     body.expiresInDays = Number.isInteger(days) && days > 0 ? days : null;
   }
+  // 访问密码（B2）：显式带 password 才处理；空字符串 = 清除密码。
+  // 这里曾漏传导致「设置了密码仍然公开」——弹窗传了密码但根本没发出去。
+  if (Object.prototype.hasOwnProperty.call(settings, "password")) {
+    body.password = String(settings.password == null ? "" : settings.password);
+  }
   const data = await apiFetchJson("/api/shares", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

@@ -687,8 +687,12 @@ export default {
     moveTargets: [],
     /** 正在被拖拽的项目（内部拖拽移动用；系统文件拖入时为空） */
     dragItems: [],
-    /** 当前高亮的放置目标（文件夹行） */
-    dragOverKey: "",
+    /**
+     * 当前高亮的放置目标（文件夹行或面包屑）。
+     * 初始必须是 null 而不是 ""——根目录的 crumb.path 就是空串，
+     * 用 "" 当初始值会让「全部文件」一直显示成可放置状态（虚线框）。
+     */
+    dragOverKey: null,
     clipboard: [],
     selectedKeys: [],
     /**
@@ -1796,7 +1800,7 @@ export default {
       // 内部拖拽（移动文件）不该被当成「从系统拖文件进来上传」
       if (this.dragItems.length) {
         this.dragItems = [];
-        this.dragOverKey = "";
+        this.dragOverKey = null;
         this.dragging = false;
         return;
       }
@@ -2517,7 +2521,7 @@ export default {
         .filter((entry) => keys.includes(entry.key));
       if (!items.length) return;
       this.dragItems = items;
-      this.dragOverKey = "";
+      this.dragOverKey = null;
       event.dataTransfer.effectAllowed = "move";
       // 自定义类型用于区分「内部拖拽」与「从系统拖文件进来上传」
       event.dataTransfer.setData("application/x-flaredrive-move", JSON.stringify(keys));
@@ -2526,7 +2530,7 @@ export default {
 
     onItemDragEnd() {
       this.dragItems = [];
-      this.dragOverKey = "";
+      this.dragOverKey = null;
     },
 
     /** 目标文件夹能不能接收这些拖拽项（items 不传就用当前拖拽中的） */
@@ -2554,7 +2558,9 @@ export default {
     },
 
     onFolderDragLeave(folder) {
-      if (this.dragOverKey === (folder && folder.key)) this.dragOverKey = "";
+      if (this.dragOverKey !== null && this.dragOverKey === (folder && folder.key)) {
+        this.dragOverKey = null;
+      }
     },
 
     async onFolderDrop(event, folder) {
@@ -2566,7 +2572,7 @@ export default {
       // 之前先清空导致判定永远为 false、拖拽静默不生效
       const allowed = this.canDropInto(folder, items);
       this.dragItems = [];
-      this.dragOverKey = "";
+      this.dragOverKey = null;
       if (!allowed) return;
       await this.moveItemsTo(items, folder.key);
     },

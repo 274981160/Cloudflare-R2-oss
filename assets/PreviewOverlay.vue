@@ -123,6 +123,11 @@
               :src="objectUrl"
               title="PDF 预览"
             ></iframe>
+            <div v-else-if="kind === 'text' && textTooLarge" class="preview-state">
+              <p class="preview-state-text">文本超过 5MB，不在线展示全文。</p>
+              <p class="preview-state-hint">可以点上方「下载」保存，或右键文件用「编辑」打开。</p>
+            </div>
+            <pre v-else-if="kind === 'text'" class="preview-text">{{ textContent }}</pre>
             <div v-else class="preview-state">
               <p class="preview-state-text" v-text="`该类型（${typeLabel}）无法在线预览，已开始下载。`"></p>
               <p class="preview-state-hint">也可以点上方「下载」再次保存，或「复制链接」分享给别人。</p>
@@ -153,6 +158,7 @@ import {
   errorMessage,
   formatSize,
   isImageFile,
+  isTextFile,
   previewKind,
   previewUrl,
   rawUrl,
@@ -230,6 +236,10 @@ export default {
     blob: null,
     /** 当前地址是不是「签名直链流式加载」（而不是整包下载出来的 blob） */
     streamed: false,
+    /** 文本预览的内容（py/js/json 等文本文件直接可预览） */
+    textContent: "",
+    /** 文本太大不再显示全文 */
+    textTooLarge: false,
     kind: null,
     /** 服务端 / 猜测得到的最终 MIME */
     contentType: "",
@@ -430,6 +440,8 @@ export default {
     /** 释放当前 Blob 与对象 URL（预览的 Blob 可能很大，不留在会话里） */
     release() {
       this._token = (this._token || 0) + 1;
+      this.textContent = "";
+      this.textTooLarge = false;
       // 只有 blob: 地址需要回收；签名直链是普通 URL，交给浏览器缓存管理
       if (this.objectUrl && this.objectUrl.startsWith("blob:")) {
         try {
@@ -591,11 +603,30 @@ export default {
 
         this.blob = blob;
         this.contentType = type;
-        this.kind = previewKind(type);
+        // 文本判定：MIME 不认（application/octet-stream）时用扩展名兜底——
+        // py/js/json 在多数存储服务里都返回 octet-stream
+        if (!previewKind(type) && isTextFile(this.displayName, type)) {
+          this.kind = "text";
+        } else {
+          this.kind = previewKind(type);
+        }
         this.objectUrl = URL.createObjectURL(blob);
         this.loading = false;
 
-        // 图片、音视频、PDF 之外的类型无法在线渲染：直接触发下载并提示
+        if (this.kind === "text") {
+          // 文本：读出来直接显示；超过 5MB 不显示全文（可下载或用编辑器打开）
+          if (blob.size > 5 * 1024 * 1024) {
+            this.textTooLarge = true;
+            this.textContent = "";
+          } else {
+            this.textTooLarge = false;
+            this.textContent = await blob.text();
+          }
+          this.loading = false;
+          return;
+        }
+
+        // 文本之外的类型无法在线渲染：直接触发下载并提示
         if (!this.kind) {
           saveBlob(blob, this.displayName);
           this.setStatus(`该类型（${this.typeLabel}）无法在线预览，已开始下载。`, false);
@@ -675,6 +706,12 @@ export default {
 </script>
 
 <style>
+.preview-text {
+  margin: 0; padding: 16px; width: 100%; height: 100%; overflow: auto;
+  background: #fff; color: #1f2328; white-space: pre-wrap; word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px; line-height: 1.6;
+}
 .preview-mask {
   position: fixed;
   inset: 0;

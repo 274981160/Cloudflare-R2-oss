@@ -540,6 +540,7 @@
       :item="previewItem"
       :siblings="previewSiblings"
       @select="onPreviewSelect"
+      @edit="onPreviewEdit"
     ></PreviewOverlay>
 
     <Transition name="fade">
@@ -1528,6 +1529,22 @@ export default {
         contentType: item.contentType,
       };
       this.showPreview = true;
+    },
+
+    /** 预览弹窗里点「编辑」：关闭预览、打开文本编辑器（H：预览转编辑） */
+    onPreviewEdit(payload) {
+      if (!payload || !payload.key) return;
+      this.editorItem = {
+        key: payload.key,
+        name: payload.name || "",
+        size: payload.size || 0,
+        contentType: payload.contentType || "",
+        // writable 由编辑器内部与列表数据兜底判断；这里不带，避免预览路径丢失权限信息
+        writable: undefined,
+        thumbnail: null,
+      };
+      this.editorForceText = false;
+      this.showTextEditor = true;
     },
 
     /* ---------------- 在线文本编辑 ---------------- */

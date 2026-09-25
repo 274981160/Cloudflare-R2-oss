@@ -53,6 +53,15 @@
             <span>下载</span>
           </button>
           <button
+            v-if="editable"
+            type="button"
+            class="preview-button"
+            aria-label="用编辑器打开"
+            @click="openEditor"
+          >
+            <span>编辑</span>
+          </button>
+          <button
             type="button"
             class="preview-button"
             aria-label="复制分享链接"
@@ -227,7 +236,7 @@ export default {
     },
   },
 
-  emits: ["update:modelValue", "select"],
+  emits: ["update:modelValue", "select", "edit"],
 
   data: () => ({
     loading: false,
@@ -273,6 +282,14 @@ export default {
 
     typeLabel() {
       return this.contentType || "未知类型";
+    },
+
+    /** 是否可进编辑器：文本类文件（文本预览阶段必然可编辑；超大文本也可以进编辑器看） */
+    editable() {
+      if (!this.itemKey) return false;
+      if (this.kind === "text") return true;
+      // 还没取回内容时按文件名/MIME 预判（py/js/json 这些双击就能看到编辑按钮）
+      return isTextFile(this.displayName, this.contentType);
     },
 
     busy() {
@@ -640,6 +657,17 @@ export default {
           this.loadError = errorMessage(error);
         }
       }
+    },
+
+    /** 转到编辑器：关掉预览弹窗，让父组件打开 TextEditor */
+    openEditor() {
+      this.close();
+      this.$emit("edit", {
+        key: this.itemKey,
+        name: this.displayName,
+        size: this.displaySize,
+        contentType: this.contentType,
+      });
     },
 
     /* ---------------- 下载 / 分享 ---------------- */

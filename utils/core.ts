@@ -153,10 +153,13 @@ async function subtreeHasNewContent(
     (entry) => dirKey === entry.key || dirKey.startsWith(`${entry.key}/`)
   );
   if (!hit) return false;
-  // 路径本身就是文件：直接看它自己的写入时间
-  if (dirKey !== hit.key) {
+  // 路径本身就是文件（或文件记录位置）：直接看它自己的写入时间
+  {
     const self: any = await bucket.head(dirKey);
-    return Boolean(self && timeOf(self) > hit.at);
+    if (self && !isDirectoryObject(self)) {
+      return timeOf(self) > hit.at;
+    }
+    // 是目录（或没有同名文件对象）：探测子树里有没有新写入
   }
   // 旧内容还在原地且都早于删除时间，不能只看第一个对象——
   // 得翻到出现「删除之后写入」的对象为止，翻完都没有才继续藏。
@@ -262,7 +265,8 @@ export async function statPath(
   // 回收站里的内容对外一律「不存在」：直链 404、WebDAV 读不到、也不能再签直链。
   // 但删除之后重新写入的对象是活内容，要放行（见 subtreeHasNewContent）
   if (await isTrashed(bucket, target)) {
-    if (await subtreeHasNewContent(bucket, target)) {
+    const hasNew = await subtreeHasNewContent(bucket, target);
+    if (hasNew) {
       return statPathRaw(bucket, target);
     }
     return null;
@@ -610,8 +614,7 @@ export async function copyPath(
       (await subtreeHasNewContent(bucket, destination)) ||
       (await trashedEntries(bucket)).some(
         (entry) =>
-          destination.startsWith(`${entry.key}/`) ||
-          (destination === entry.key && entry.type === "folder")
+          destination.startsWith(`${entry.key}/`) || destination === entry.key
       );
     if (!tolerated) {
       throw new CoreError(409, "目标路径在回收站里，请先恢复或彻底删除");

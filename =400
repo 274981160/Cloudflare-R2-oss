@@ -1,0 +1,2 @@
+=== 深挖：用户说『文件被篡改为tmp』——线上 MOVE 409 后 tmp 留存。而 b81f88e 修复了 MOVE。关键问题：**用户测试时线上是否已是 b81f88e**？推送时间距今约 5 分钟，CF Pages 构建+部署约 1-2 分钟。用户消息在我推送后马上发——大概率测的是 ed03d15（只有 PUT 修复，没有 MOVE 修复）→ MOVE 409 ✓ 与现象完全吻合。
+echo === 但还有一个我必须自查的洞：MOVE 409 时 copyPath 抛 CoreError，move.ts 的 handleRequestMove 有没有把 COPY 的 409 正确传回？看 move.ts：copyResponse.status 就 return ✓。然后 tmp 残留 ✓。

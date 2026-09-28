@@ -116,10 +116,15 @@ export async function handleRequestPut(context: DavContext): Promise<Response> {
   if (!isInternal && (await isTrashed(bucket, path))) {
     const released = await releaseTrashedFile(bucket, path);
     const stillTrashed = released ? await isTrashed(bucket, path) : true;
-    const insideFolderEntry = (await trashedEntries(bucket)).some(
-      (entry) => path.startsWith(`${entry.key}/`)
+    // 放行两类情况：
+    // 1) 路径在某条记录的子树里（往删过的同名文件夹里上传/解压）
+    // 2) 路径恰好是一条【文件夹】记录的位置（把文件传到与已删文件夹同名的位置）
+    const tolerated = (await trashedEntries(bucket)).some(
+      (entry) =>
+        path.startsWith(`${entry.key}/`) ||
+        (path === entry.key && entry.type === "folder")
     );
-    if (stillTrashed && !insideFolderEntry) {
+    if (stillTrashed && !tolerated) {
       return new Response(
         "该路径在回收站里，请先从回收站恢复或彻底删除后再上传",
         { status: 409 }

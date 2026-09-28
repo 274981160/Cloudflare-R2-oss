@@ -164,6 +164,8 @@ export interface TrashedPrefix {
   key: string;
   /** 删除时间（毫秒）。早于它写入的对象才算被删内容。 */
   at: number;
+  /** 记录类型：folder / file（放行判定需要区分） */
+  type?: "file" | "folder";
 }
 
 interface EntryCache {
@@ -184,6 +186,7 @@ export async function trashedEntries(bucket: R2Bucket): Promise<TrashedPrefix[]>
     .map((entry) => ({
       key: normalize(entry.key),
       at: Date.parse(entry.deletedAt) || 0,
+      type: entry.type,
     }))
     .filter((entry): entry is TrashedPrefix => Boolean(entry.key));
   entryCache = { at: now, prefixes };

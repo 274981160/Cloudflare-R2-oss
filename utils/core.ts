@@ -602,10 +602,18 @@ export async function copyPath(
   if (!destination) throw new CoreError(403, "目标路径非法");
   if (source === destination) throw new CoreError(400, "源与目标相同");
   // 不许把东西写进「已回收」的位置：那里还留着旧内容，会造成两边打架。
-  // 例外：恢复流程（allowIntoTrashed）就是要写回回收站里的原位置；
-  // 以及目标位置已经有「删除之后新写入」的活内容（见 subtreeHasNewContent）。
+  // 例外：恢复流程（allowIntoTrashed）；目标位置已有「删除之后新写入」的活内容；
+  // 以及目标与某条【文件夹】记录同名/在其子树下——与 put.ts 的放行语义一致，
+  // 否则 WebDAV 客户端「PUT tmp → MOVE 改名」的覆盖上传会在改名一步被 409 卡死。
   if (await isTrashed(bucket, destination) && !options.allowIntoTrashed) {
-    if (!(await subtreeHasNewContent(bucket, destination))) {
+    const tolerated =
+      (await subtreeHasNewContent(bucket, destination)) ||
+      (await trashedEntries(bucket)).some(
+        (entry) =>
+          destination.startsWith(`${entry.key}/`) ||
+          (destination === entry.key && entry.type === "folder")
+      );
+    if (!tolerated) {
       throw new CoreError(409, "目标路径在回收站里，请先恢复或彻底删除");
     }
   }
